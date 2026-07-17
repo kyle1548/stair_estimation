@@ -60,7 +60,6 @@ public:
 
         // 初始化 PlaneSegmentation
         plane_segmentation_ = std::make_unique<PlaneSegmentation>();
-        plane_segmentation_->init_tf();
 
         // 初始化 CSV 檔案
         stair_csv_.open("stair_planes.csv");

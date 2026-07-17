@@ -31,7 +31,6 @@ class PlaneSegmentation {
         PlaneSegmentation();
         ~PlaneSegmentation();
 
-        void init_tf();
         PlaneDistances segment_planes(pcl::PointCloud<PointT>::Ptr cloud);
         void setInputCloud(pcl::PointCloud<PointT>::Ptr cloud);
         void computeNormals();

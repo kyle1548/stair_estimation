@@ -31,11 +31,6 @@
 typedef pcl::PointXYZRGB PointT;
 typedef pcl::PointXYZ PointT_no_color;
 
-PlaneSegmentation::~PlaneSegmentation() {
-    if (histogram_csv.is_open()) {
-        histogram_csv.close();
-    }
-}
 
 PlaneSegmentation::PlaneSegmentation() :
     normals_(new pcl::PointCloud<pcl::Normal>),
@@ -45,20 +40,25 @@ PlaneSegmentation::PlaneSegmentation() :
 {
     pass_.setKeepOrganized(true);
     normal_estimator_.setNormalEstimationMethod(normal_estimator_.AVERAGE_3D_GRADIENT);
+    // normal_estimator_.setNormalEstimationMethod(normal_estimator_.AVERAGE_DEPTH_CHANGE);
+    // normal_estimator_.setNormalEstimationMethod(normal_estimator_.COVARIANCE_MATRIX);
     normal_estimator_.setMaxDepthChangeFactor(0.01f);
     normal_estimator_.setNormalSmoothingSize(10.0f);
 
-    histogram_csv.open("histogram.csv");
-}
-
-void PlaneSegmentation::init_tf() {
-    tf_listener_ = std::make_unique<tf2_ros::TransformListener>(tf_buffer_);
-    
+    tf_listener_ = std::make_unique<tf2_ros::TransformListener>(tf_buffer_);    
     pub = nh.advertise<sensor_msgs::PointCloud2>("plane_segmentation", 1);
     normal_pub = nh.advertise<visualization_msgs::MarkerArray>("visualization_normals", 1);
     normal_pub2 = nh.advertise<sensor_msgs::PointCloud2>("normal_points", 1);
     plane_pub = nh.advertise<visualization_msgs::MarkerArray>("visualization_plane", 1);
-}
+
+    histogram_csv.open("histogram.csv");
+}//end PlaneSegmentation
+
+PlaneSegmentation::~PlaneSegmentation() {
+    if (histogram_csv.is_open()) {
+        histogram_csv.close();
+    }
+}//end ~PlaneSegmentation
 
 PlaneDistances PlaneSegmentation::segment_planes(pcl::PointCloud<PointT>::Ptr cloud) {
     this->setInputCloud(cloud);
