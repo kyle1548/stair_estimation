@@ -26,6 +26,7 @@
 #include <memory>
 #include <iomanip>
 #include <vector>
+#include <tf2_ros/static_transform_broadcaster.h>
 
 #include "corgi_msgs/TriggerStamped.h"
 #include "corgi_msgs/StairPlanes.h"
@@ -34,6 +35,7 @@
 
 class StairEstimatorNode {
 private:
+    tf2_ros::StaticTransformBroadcaster static_broadcaster_;
     ros::NodeHandle nh_;
     ros::Subscriber cloud_sub_;
     ros::Subscriber trigger_sub_;
@@ -50,6 +52,8 @@ private:
     int cloud_seq_ = 0;
     Eigen::Vector3d v_normal_, h_normal_;
     std::ofstream stair_csv_;
+
+    const std::array<double, 3> CoM2cemera = {0.32075, 0, 0.099};  // translation from CoM to camera
 
 public:
     StairEstimatorNode() {

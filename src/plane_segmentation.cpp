@@ -52,6 +52,7 @@ PlaneSegmentation::PlaneSegmentation(bool debug) :
         normal_pub = nh.advertise<visualization_msgs::MarkerArray>("visual_normal_vectors", 1);
         normal_sphere_pub = nh.advertise<sensor_msgs::PointCloud2>("visual_normal_sphere", 1);
         plane_pub = nh.advertise<visualization_msgs::MarkerArray>("visual_extended_planes", 1);
+        edge_pub = nh.advertise<sensor_msgs::PointCloud2>("visual_stair_edges", 1);
 
         histogram_csv.open("histogram.csv");
     }//end if
@@ -69,12 +70,15 @@ PlaneDistances PlaneSegmentation::segment_planes(pcl::PointCloud<PointT>::Ptr cl
     this->group_by_normals();
     auto [h_plane_distances, h_plane_point_indices] = segment_by_distances(centroid_z, h_point_idx);
     auto [v_plane_distances, v_plane_point_indices] = segment_by_distances(-centroid_x, v_point_idx);
-
+    
+    auto [avg_depths, edge_indices] = find_depth_by_h_plane(h_plane_distances, h_plane_point_indices);
     if (debug_) {
         visualize_stair_planes();
         visualize_normal_vectors();
         visualize_extend_planes(h_plane_distances, v_plane_distances);
         visualize_normal_in_sphere();
+        visualize_h_plane_edges(edge_indices);
+
     }//end if 
     
     return {h_plane_distances, v_plane_distances, centroid_z, -centroid_x};
@@ -294,6 +298,66 @@ std::pair<std::vector<double>, std::vector<std::vector<int>>> PlaneSegmentation:
 
     return {final_distances, final_indices}; // from smallest to largest
 }//end segment_by_distances
+
+std::pair<std::vector<double>, std::vector<int>> PlaneSegmentation::find_depth_by_h_plane(const std::vector<double>& plane_distances, const std::vector<std::vector<int>>& plane_indices) {
+    std::vector<double> avg_depths;
+    std::vector<int> edge_point_indices;
+    
+    // 遍歷每一個被分割出來的水平面
+    for (size_t i = 0; i < plane_indices.size(); ++i) {
+        const std::vector<int>& indices = plane_indices[i];
+        
+        // 1. 建立一個陣列，大小等於點雲的寬度 (organized columns)
+        // 用來記錄「每一直行中，最靠近機器人的深度值 (最前緣)」
+        // 因為我們要找「最前緣（離機器人最近）」，所以初始值設為正無限大
+        std::vector<double> closest_values(cloud_->width, INFINITY);
+        std::vector<int> closest_indices(cloud_->width, -1);
+
+        // 2. 在這個水平面中，尋找每一直行（col）的最前緣點
+        for (int idx : indices) {
+            int col = idx % cloud_->width; // 取得在 organized 點雲中的 column 索引
+            const PointT& point = cloud_->points[idx];
+            
+            // 如果點無效，直接跳過
+            if (!pcl::isFinite(point)) continue;
+
+            // 計算該點在世界座標下（或對齊後的）正前方深度 X
+            // 這裡直接使用 -centroid_x 投影，求得從世界原點往前的投影深度
+            double depth = -centroid_x.dot(Eigen::Vector3d(point.x, point.y, point.z));
+            
+            // 🌟 核心幾何邏輯：找「最前緣」
+            // 在這一直行中，如果這個點的深度更小（也就是更靠近機器人），就更新它
+            if (depth < closest_values[col]) {
+                closest_values[col] = depth;
+            }
+        }
+
+        // 3. 計算該水平面「所有有效最前緣點」的平均深度
+        double sum = 0.0;
+        int count = 0;
+        for (size_t col = 0; col < closest_values.size(); ++col) {
+            if (closest_values[col] != INFINITY) {
+                sum += closest_values[col];
+                ++count;
+                
+                if (closest_indices[col] != -1) {
+                    edge_point_indices.push_back(closest_indices[col]);
+                    std::cout << closest_indices[col];
+
+                }
+            }
+        }
+
+        // 如果這層有找到有效點，存入平均深度；否則存入 NaN
+        if (count > 0) {
+            avg_depths.push_back(sum / count);
+        } else {
+            avg_depths.push_back(std::numeric_limits<double>::quiet_NaN());
+        }
+    }
+
+    return {avg_depths, edge_point_indices};
+}//end find_depth_by_h_plane
 
 void PlaneSegmentation::visualize_stair_planes() {
     pcl::PointCloud<PointT>::Ptr colored_cloud(new pcl::PointCloud<PointT>(*cloud_));
@@ -575,3 +639,36 @@ void PlaneSegmentation::visualize_normal_in_sphere() {
     pcl::toROSMsg(*cloud_msg, output);
     normal_sphere_pub.publish(output);
 }//end visualize_normal_in_sphere
+
+void PlaneSegmentation::visualize_h_plane_edges(const std::vector<int>& edge_indices) {
+    pcl::PointCloud<PointT>::Ptr edge_cloud(new pcl::PointCloud<PointT>);
+    edge_cloud->reserve(edge_indices.size()); // 預先分配記憶體，提升效率
+    std::cout << edge_indices.size();
+
+    // 2. 🌟 只複製被選為 edge 的點，並將它們塗成黃色 (R=255, G=255, B=0)
+    for (int idx : edge_indices) {
+        PointT point = cloud_->points[idx];
+        
+        // 確保點是有效的
+        if (pcl::isFinite(point)) {
+            point.r = 255;
+            point.g = 255;
+            point.b = 0;
+            edge_cloud->points.push_back(point);
+        }
+    }
+
+    // 3. 填充 ROS 點雲的 header 資訊
+    edge_cloud->header = cloud_->header; // 繼承原始點雲的 timestamp 和 frame_id
+    edge_cloud->width = edge_cloud->points.size();
+    edge_cloud->height = 1;
+    edge_cloud->is_dense = false;
+    pcl_conversions::toPCL(ros::Time::now(), edge_cloud->header.stamp);
+
+    /* Publish the result */
+    sensor_msgs::PointCloud2 output;
+    pcl::toROSMsg(*edge_cloud, output);
+    // 這裡的 frame_id 會自動繼承原本點雲的 (例如 map 或 zedxm_left_camera_frame)
+    edge_pub.publish(output);
+}
+

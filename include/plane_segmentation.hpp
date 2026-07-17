@@ -37,12 +37,14 @@ class PlaneSegmentation {
         void group_by_normals();
         std::pair<std::vector<double>, std::vector<std::vector<int>>> segment_by_distances(Eigen::Vector3d centroid, const std::vector<int>& indices);
         Eigen::Vector3d computeCentroid(const std::vector<int>& indices);
-        std::vector<double> find_height_by_v_plane(const std::vector<double>& plane_distances, const std::vector<std::vector<int>>& plane_indices);
+        std::pair<std::vector<double>, std::vector<int>> find_depth_by_h_plane(const std::vector<double>& plane_distances, const std::vector<std::vector<int>>& plane_indices);
 
         void visualize_stair_planes();
         void visualize_normal_vectors();
         void visualize_extend_planes(const std::vector<double>& h_plane_distances, const std::vector<double>& v_plane_distances);
         void visualize_normal_in_sphere();
+        void visualize_h_plane_edges(const std::vector<int>& edge_indices);
+
         
     private:
         tf2_ros::Buffer tf_buffer_;
@@ -63,6 +65,7 @@ class PlaneSegmentation {
         ros::Publisher normal_pub;
         ros::Publisher normal_sphere_pub;
         ros::Publisher plane_pub;
+        ros::Publisher edge_pub;
         ros::NodeHandle nh;
 
         int last_marker_count_ = 0; // 用於記錄上次發佈的 marker 數量
