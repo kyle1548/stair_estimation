@@ -15,7 +15,7 @@
 
 #include <Eigen/Dense>
 
-
+#define DEBUG 1
 typedef pcl::PointXYZRGB PointT;
 typedef pcl::PointXYZ PointT_no_color;
 
@@ -28,7 +28,7 @@ struct PlaneDistances {
 
 class PlaneSegmentation {
     public:
-        PlaneSegmentation();
+        PlaneSegmentation(bool debug=DEBUG);
         ~PlaneSegmentation();
 
         PlaneDistances segment_planes(pcl::PointCloud<PointT>::Ptr cloud);
@@ -39,10 +39,10 @@ class PlaneSegmentation {
         Eigen::Vector3d computeCentroid(const std::vector<int>& indices);
         std::vector<double> find_height_by_v_plane(const std::vector<double>& plane_distances, const std::vector<std::vector<int>>& plane_indices);
 
-        void visualize_planes();
-        void visualize_normal();
-        void visualize_CubePlanes(const std::vector<double>& h_plane_distances, const std::vector<double>& v_plane_distances);
-        void visualize_normal_in_space();
+        void visualize_stair_planes();
+        void visualize_normal_vectors();
+        void visualize_extend_planes(const std::vector<double>& h_plane_distances, const std::vector<double>& v_plane_distances);
+        void visualize_normal_in_sphere();
         
     private:
         tf2_ros::Buffer tf_buffer_;
@@ -58,16 +58,17 @@ class PlaneSegmentation {
         std::vector<int> v_point_idx;   // point index in cloud blongs to vertical   planes
         const double cos_threshold_ = std::cos(pcl::deg2rad(10.0));
 
-        ros::Publisher pub;
+        bool debug_;
+        ros::Publisher stair_pub;
         ros::Publisher normal_pub;
-        ros::Publisher normal_pub2;
+        ros::Publisher normal_sphere_pub;
         ros::Publisher plane_pub;
         ros::NodeHandle nh;
 
         int last_marker_count_ = 0; // 用於記錄上次發佈的 marker 數量
-        int last_cube_marker_count_h_;
-        int last_cube_marker_count_v_;
-
+        int last_plane_marker_count_h_;
+        int last_plane_marker_count_v_;
+        
         std::ofstream histogram_csv;
 };
 
