@@ -34,7 +34,8 @@
 
 class StairEstimatorNode {
 private:
-    tf2_ros::StaticTransformBroadcaster static_broadcaster_;
+    tf2_ros::Buffer tf_buffer_;
+    std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
     ros::NodeHandle nh_;
     ros::Subscriber cloud_sub_;
     ros::Subscriber trigger_sub_;
@@ -56,6 +57,7 @@ private:
 public:
     StairEstimatorNode() {
         // 初始化訂閱與發布
+        tf_listener_ = std::make_unique<tf2_ros::TransformListener>(tf_buffer_);    
         cloud_sub_   = nh_.subscribe("/zedxm/zed_node/point_cloud/cloud_registered", 1, &StairEstimatorNode::cloud_cb, this);
         plane_pub_w_   = nh_.advertise<stair_estimation::StairPlanes>("/stair_planes_world", 1);
         plane_pub_c_   = nh_.advertise<stair_estimation::StairPlanes>("/stair_planes_camera", 1);
@@ -106,8 +108,35 @@ public:
         plane_pub_w_.publish(plane_msg_w_);
 
         /* Relative to Camera */
-        plane_msg_c_.vertical = plane_distances_.vertical;
-        plane_msg_c_.horizontal = plane_distances_.horizontal;
+        Eigen::Vector3d camera_pos(0.0, 0.0, 0.0);
+        try {
+            if (tf_buffer_.canTransform("map", "zedxm_base_link", ros::Time(0), ros::Duration(0.0))) {
+                geometry_msgs::TransformStamped tf_msg = 
+                    tf_buffer_.lookupTransform("map", "zedxm_base_link", ros::Time(0));
+                
+                // 取得機器人當前在 map 座標系下的 X (前後) 與 Z (高度)
+                camera_pos.x() = tf_msg.transform.translation.x;
+                camera_pos.y() = tf_msg.transform.translation.y;
+                camera_pos.z() = tf_msg.transform.translation.z;
+            }
+        } catch (tf2::TransformException &ex) {
+            ROS_ERROR("TF Exception: %s", ex.what());
+        }
+
+        Eigen::Vector3d n_v(plane_distances_.v_normal.x(), plane_distances_.v_normal.y(), plane_distances_.v_normal.z());
+        double camera_projected_v = camera_pos.dot(n_v); // 機器人位置內積樓梯法向量
+        plane_msg_c_.vertical.clear();
+        for (double v_map : plane_distances_.vertical) {
+            // 公式：世界距離 - 機器人投影長度
+            plane_msg_c_.vertical.push_back(v_map - camera_projected_v);
+        }
+        Eigen::Vector3d n_h(plane_distances_.h_normal.x(), plane_distances_.h_normal.y(), plane_distances_.h_normal.z());
+        double camera_projected_h = camera_pos.dot(n_h);
+        plane_msg_c_.horizontal.clear();
+        for (double h_map : plane_distances_.horizontal) {
+            // 樓梯在世界的高度 - 機器人當前的高度 = 樓梯相對於機器人的高度！
+            plane_msg_c_.horizontal.push_back(h_map - camera_projected_h);
+        }
         plane_msg_c_.v_normal.x = plane_distances_.v_normal.x();
         plane_msg_c_.v_normal.y = plane_distances_.v_normal.y();
         plane_msg_c_.v_normal.z = plane_distances_.v_normal.z();
