@@ -28,8 +28,7 @@
 #include <vector>
 #include <tf2_ros/static_transform_broadcaster.h>
 
-#include "corgi_msgs/TriggerStamped.h"
-#include "corgi_msgs/StairPlanes.h"
+#include "stair_estimation/StairPlanes.h"
 #include "plane_segmentation.hpp"
 #include "plane_tracker.hpp"
 
@@ -39,35 +38,34 @@ private:
     ros::NodeHandle nh_;
     ros::Subscriber cloud_sub_;
     ros::Subscriber trigger_sub_;
-    ros::Publisher plane_pub_;
+    ros::Publisher plane_pub_w_;
+    ros::Publisher plane_pub_c_;
 
     // 使用 std::unique_ptr 自動管理記憶體，避免 Memory Leak
     std::unique_ptr<PlaneSegmentation> plane_segmentation_;
     PlaneTracker plane_tracker_;
     
     PlaneDistances plane_distances_;    // distances of planes relative to the robot (in robot frame).
-    corgi_msgs::TriggerStamped trigger_msg_;
-    corgi_msgs::StairPlanes plane_msg_;
+    stair_estimation::StairPlanes plane_msg_w_;
+    stair_estimation::StairPlanes plane_msg_c_;
     
     int cloud_seq_ = 0;
     Eigen::Vector3d v_normal_, h_normal_;
     std::ofstream stair_csv_;
 
-    const std::array<double, 3> CoM2cemera = {0.32075, 0, 0.099};  // translation from CoM to camera
-
 public:
     StairEstimatorNode() {
         // 初始化訂閱與發布
         cloud_sub_   = nh_.subscribe("/zedxm/zed_node/point_cloud/cloud_registered", 1, &StairEstimatorNode::cloud_cb, this);
-        trigger_sub_ = nh_.subscribe("trigger", 1, &StairEstimatorNode::trigger_cb, this);
-        plane_pub_   = nh_.advertise<corgi_msgs::StairPlanes>("/stair_planes", 1);
+        plane_pub_w_   = nh_.advertise<stair_estimation::StairPlanes>("/stair_planes_world", 1);
+        plane_pub_c_   = nh_.advertise<stair_estimation::StairPlanes>("/stair_planes_camera", 1);
 
         // 初始化 PlaneSegmentation
         plane_segmentation_ = std::make_unique<PlaneSegmentation>();
 
         // 初始化 CSV 檔案
         stair_csv_.open("stair_planes.csv");
-        stair_csv_ << "Time,Trigger,";
+        stair_csv_ << "Time,";
         for (int i = 0; i < 5; i++) stair_csv_ << "Vertical"   << i << ",";
         for (int i = 0; i < 5; i++) stair_csv_ << "Horizontal" << i << ",";
         stair_csv_ << "\n";
@@ -94,32 +92,38 @@ public:
 
         // 更新與發布平面資訊
         plane_tracker_.update(plane_distances_);
-        plane_msg_.horizontal = plane_tracker_.get_horizontal_averages();
-        plane_msg_.vertical = plane_tracker_.get_vertical_averages();
+        plane_msg_w_.vertical = plane_tracker_.get_vertical_averages();
+        plane_msg_w_.horizontal = plane_tracker_.get_horizontal_averages();
         v_normal_ = plane_tracker_.get_vertical_normal();
         h_normal_ = plane_tracker_.get_horizontal_normal();
         
-        plane_msg_.v_normal.x = v_normal_.x();
-        plane_msg_.v_normal.y = v_normal_.y();
-        plane_msg_.v_normal.z = v_normal_.z();
-        plane_msg_.h_normal.x = h_normal_.x();
-        plane_msg_.h_normal.y = h_normal_.y();
-        plane_msg_.h_normal.z = h_normal_.z();
-        plane_pub_.publish(plane_msg_);
+        plane_msg_w_.v_normal.x = v_normal_.x();
+        plane_msg_w_.v_normal.y = v_normal_.y();
+        plane_msg_w_.v_normal.z = v_normal_.z();
+        plane_msg_w_.h_normal.x = h_normal_.x();
+        plane_msg_w_.h_normal.y = h_normal_.y();
+        plane_msg_w_.h_normal.z = h_normal_.z();
+        plane_pub_w_.publish(plane_msg_w_);
+
+        /* Relative to Camera */
+        plane_msg_c_.vertical = plane_distances_.vertical;
+        plane_msg_c_.horizontal = plane_distances_.horizontal;
+        plane_msg_c_.v_normal.x = plane_distances_.v_normal.x();
+        plane_msg_c_.v_normal.y = plane_distances_.v_normal.y();
+        plane_msg_c_.v_normal.z = plane_distances_.v_normal.z();
+        plane_msg_c_.h_normal.x = plane_distances_.h_normal.x();
+        plane_msg_c_.h_normal.y = plane_distances_.h_normal.y();
+        plane_msg_c_.h_normal.z = plane_distances_.h_normal.z();
+        plane_pub_c_.publish(plane_msg_c_);
 
         // 當收到新點雲且處理完畢時，輸出尺寸結果到終端機
         print_stair_dimensions();
     }//end cloud_cb
 
-    void trigger_cb(const corgi_msgs::TriggerStamped::ConstPtr& msg) {
-        trigger_msg_ = *msg;
-    }//end trigger_cb
-
     void write_csv_record() {
         if (!stair_csv_.is_open()) return;
 
         stair_csv_ << ros::Time::now() << ",";
-        stair_csv_ << (int)trigger_msg_.enable << ",";
         for (int i = 0; i < 5; i++) {
             if (i < plane_distances_.vertical.size())
                 stair_csv_ << std::fixed << std::setprecision(4) << plane_distances_.vertical[i];
@@ -213,7 +217,7 @@ public:
 };
 
 int main(int argc, char** argv) {
-    ros::init(argc, argv, "plane_segmentation_node");
+    ros::init(argc, argv, "stair_estimator_node");
     
     // 建立節點物件
     StairEstimatorNode estimator;

@@ -68,8 +68,8 @@ PlaneDistances PlaneSegmentation::segment_planes(pcl::PointCloud<PointT>::Ptr cl
     this->setInputCloud(cloud);
     this->computeNormals();
     this->group_by_normals();
-    auto [h_plane_distances, h_plane_point_indices] = segment_by_distances(centroid_z, h_point_idx);
     auto [v_plane_distances, v_plane_point_indices] = segment_by_distances(-centroid_x, v_point_idx);
+    auto [h_plane_distances, h_plane_point_indices] = segment_by_distances(centroid_z, h_point_idx);
     
     auto [avg_depths, edge_indices] = find_depth_by_h_plane(h_plane_distances, h_plane_point_indices);
     if (debug_) {
@@ -81,7 +81,7 @@ PlaneDistances PlaneSegmentation::segment_planes(pcl::PointCloud<PointT>::Ptr cl
 
     }//end if 
     
-    return {h_plane_distances, v_plane_distances, centroid_z, -centroid_x};
+    return {v_plane_distances, h_plane_distances, -centroid_x, centroid_z};
 }//end segment_planes
 
 void PlaneSegmentation::setInputCloud(pcl::PointCloud<PointT>::Ptr cloud) {
@@ -166,8 +166,8 @@ void PlaneSegmentation::group_by_normals() {
     }//end for
 
     // Update centroid
-    centroid_z = !h_point_idx.empty() ? computeCentroid(h_point_idx) : centroid_z;
     centroid_x = !v_point_idx.empty() ? computeCentroid(v_point_idx) : centroid_x;
+    centroid_z = !h_point_idx.empty() ? computeCentroid(h_point_idx) : centroid_z;
 }//end group_by_normals
 
 Eigen::Vector3d PlaneSegmentation::computeCentroid(const std::vector<int>& indices) {
@@ -329,6 +329,7 @@ std::pair<std::vector<double>, std::vector<int>> PlaneSegmentation::find_depth_b
             // 在這一直行中，如果這個點的深度更小（也就是更靠近機器人），就更新它
             if (depth < closest_values[col]) {
                 closest_values[col] = depth;
+                closest_indices[col] = idx; // 記錄這個前緣點的索引
             }
         }
 
@@ -342,8 +343,6 @@ std::pair<std::vector<double>, std::vector<int>> PlaneSegmentation::find_depth_b
                 
                 if (closest_indices[col] != -1) {
                     edge_point_indices.push_back(closest_indices[col]);
-                    std::cout << closest_indices[col];
-
                 }
             }
         }
@@ -643,7 +642,6 @@ void PlaneSegmentation::visualize_normal_in_sphere() {
 void PlaneSegmentation::visualize_h_plane_edges(const std::vector<int>& edge_indices) {
     pcl::PointCloud<PointT>::Ptr edge_cloud(new pcl::PointCloud<PointT>);
     edge_cloud->reserve(edge_indices.size()); // 預先分配記憶體，提升效率
-    std::cout << edge_indices.size();
 
     // 2. 🌟 只複製被選為 edge 的點，並將它們塗成黃色 (R=255, G=255, B=0)
     for (int idx : edge_indices) {

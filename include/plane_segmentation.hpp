@@ -15,15 +15,15 @@
 
 #include <Eigen/Dense>
 
-#define DEBUG 1
+#define DEBUG 0
 typedef pcl::PointXYZRGB PointT;
 typedef pcl::PointXYZ PointT_no_color;
 
 struct PlaneDistances {
-    std::vector<double> horizontal;
     std::vector<double> vertical;
-    Eigen::Vector3d h_normal;
+    std::vector<double> horizontal;
     Eigen::Vector3d v_normal;
+    Eigen::Vector3d h_normal;
 };
 
 class PlaneSegmentation {
