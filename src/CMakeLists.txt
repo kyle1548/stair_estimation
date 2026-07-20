@@ -1,2 +1,0 @@
-add_executable(stair_estimator stair_estimator.cpp)
-target_link_libraries(stair_estimator ${catkin_LIBRARIES} stair_estimation)

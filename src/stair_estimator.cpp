@@ -1,63 +1,100 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
-#include <geometry_msgs/msg/transform_stamped.hpp>
+#include <pcl_conversions/pcl_conversions.h>
+#include <pcl/point_types.h>
+#include <pcl/io/pcd_io.h>
+#include <pcl/features/integral_image_normal.h>
+#include <pcl/segmentation/organized_multi_plane_segmentation.h>
+#include <pcl/segmentation/sac_segmentation.h>
+#include <pcl/filters/extract_indices.h>
+#include <pcl/filters/voxel_grid.h>
+#include <pcl/visualization/cloud_viewer.h>
+#include <pcl/filters/passthrough.h>
+#include <visualization_msgs/msg/marker_array.hpp>
+#include <pcl/search/kdtree.h>
+#include <pcl/segmentation/extract_clusters.h>
+#include <pcl/features/normal_3d.h>
+#include <pcl/common/common.h>
+#include <pcl/kdtree/kdtree_flann.h>
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/buffer.h>
-#include <pcl_conversions/pcl_conversions.h>
-#include <pcl_ros/transforms.hpp>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
+#include <tf2_eigen/tf2_eigen.h>
+#include <unordered_map>
+#include <random>
+#include <memory>
+#include <iomanip>
+#include <vector>
+#include <tf2_ros/static_transform_broadcaster.h>
 
-#include "stair_estimation/plane_segmentation.hpp"
-#include "stair_estimation/plane_tracker.hpp" 
 #include "stair_estimation/msg/stair_planes.hpp"
+#include "plane_segmentation.hpp"
+#include "plane_tracker.hpp"
 
 class StairEstimatorNode : public rclcpp::Node {
-public:
-    StairEstimatorNode() : Node("stair_estimator") {
-        tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
-        tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
-
-        plane_segmentation_ = std::make_unique<PlaneSegmentation>(shared_from_this(), true);
-
-        cloud_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-            "/zedxm/zed_node/point_cloud/cloud_registered", 10,
-            std::bind(&StairEstimatorNode::cloud_callback, this, std::placeholders::_1)
-        );
-
-        plane_pub_w_ = this->create_publisher<stair_estimation::msg::StairPlanes>("/stair_estimation/plane_info_w", 10);
-        plane_pub_c_ = this->create_publisher<stair_estimation::msg::StairPlanes>("/stair_estimation/plane_info_c", 10);
-        
-        RCLCPP_INFO(this->get_logger(), "Stair Estimator Node (ROS2) has been successfully initialized.");
-    }
-
 private:
-    void cloud_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
-        RCLCPP_INFO_ONCE(this->get_logger(), "First point cloud message received!");
+    std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+    std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
+    rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_sub_;
+    rclcpp::Publisher<stair_estimation::msg::StairPlanes>::SharedPtr plane_pub_w_;
+    rclcpp::Publisher<stair_estimation::msg::StairPlanes>::SharedPtr plane_pub_c_;
 
+    std::unique_ptr<PlaneSegmentation> plane_segmentation_;
+    PlaneTracker plane_tracker_;
+    
+    PlaneDistances plane_distances_;    // distances of planes relative to the robot (in robot frame).
+    stair_estimation::msg::StairPlanes plane_msg_w_;
+    stair_estimation::msg::StairPlanes plane_msg_c_;
+    
+    Eigen::Vector3d v_normal_, h_normal_;
+    std::ofstream stair_csv_;
+
+public:
+    StairEstimatorNode() : Node("stair_estimator_node") {
+        // 初始化訂閱與發布
+        tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
+        tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_, this, false);    
+        
+        cloud_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
+            "/zedxm/zed_node/point_cloud/cloud_registered", 1,
+            std::bind(&StairEstimatorNode::cloud_cb, this, std::placeholders::_1));
+            
+        plane_pub_w_ = this->create_publisher<stair_estimation::msg::StairPlanes>("/stair_planes_world", 1);
+        plane_pub_c_ = this->create_publisher<stair_estimation::msg::StairPlanes>("/stair_planes_camera", 1);
+
+        // 初始化 PlaneSegmentation
+        plane_segmentation_ = std::make_unique<PlaneSegmentation>(this);
+
+        // 初始化 CSV 檔案
+        stair_csv_.open("stair_planes.csv");
+        stair_csv_ << "Time,";
+        for (int i = 0; i < 5; i++) stair_csv_ << "Vertical"   << i << ",";
+        for (int i = 0; i < 5; i++) stair_csv_ << "Horizontal" << i << ",";
+        stair_csv_ << "\n";
+    }//end StairEstimatorNode
+
+    ~StairEstimatorNode() {
+        if (stair_csv_.is_open()) {
+            stair_csv_.close();
+        }
+    }//end ~StairEstimatorNode
+
+    void cloud_cb(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
         pcl::PointCloud<PointT>::Ptr cloud(new pcl::PointCloud<PointT>);
         pcl::fromROSMsg(*msg, *cloud);
-
-        pcl::PointCloud<PointT>::Ptr cloud_map(new pcl::PointCloud<PointT>);
-        try {
-            if (tf_buffer_->canTransform("map", msg->header.frame_id, tf2::TimePointZero)) {
-                pcl_ros::transformPointCloud("map", *cloud, *cloud_map, *tf_buffer_);
-            } else {
-                RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "TF 'map' to '%s' not available yet.", msg->header.frame_id.c_str());
-                return;
-            }
-        } catch (tf2::TransformException &ex) {
-            RCLCPP_ERROR(this->get_logger(), "TF Core Exception: %s", ex.what());
+        if (!cloud->isOrganized()) {
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000, 
+                "Point cloud is not organized. Skipping frame.");
             return;
         }
 
         // 進行平面分割
-        plane_distances_ = plane_segmentation_->segment_planes(cloud_map);
+        plane_distances_ = plane_segmentation_->segment_planes(cloud);
 
-        // 更新與發布全域平面資訊 (_w_) -> 經過 Tracker 濾波與追蹤
+        // 更新與發布平面資訊
         plane_tracker_.update(plane_distances_);
-        
         plane_msg_w_.vertical = plane_tracker_.get_vertical_averages();
         plane_msg_w_.horizontal = plane_tracker_.get_horizontal_averages();
-        
         v_normal_ = plane_tracker_.get_vertical_normal();
         h_normal_ = plane_tracker_.get_horizontal_normal();
         
@@ -67,67 +104,171 @@ private:
         plane_msg_w_.h_normal.x = h_normal_.x();
         plane_msg_w_.h_normal.y = h_normal_.y();
         plane_msg_w_.h_normal.z = h_normal_.z();
+        plane_pub_w_->publish(plane_msg_w_);
 
-        // 填寫相對座標系特徵 (_c)：使用完美幾何向量投影，免重複翻轉點雲
-        Eigen::Vector3d robot_pos(0.0, 0.0, 0.0);
+        /* Relative to Camera */
+        Eigen::Vector3d camera_pos(0.0, 0.0, 0.0);
         try {
-            if (tf_buffer_->canTransform("map", "zedxm_base_link", tf2::TimePointZero)) {
-                auto tf_msg = tf_buffer_->lookupTransform("map", "zedxm_base_link", tf2::TimePointZero);
-                robot_pos.x() = tf_msg.transform.translation.x;
-                robot_pos.y() = tf_msg.transform.translation.y;
-                robot_pos.z() = tf_msg.transform.translation.z;
+            if (tf_buffer_->canTransform("map", "zedxm_base_link", tf2::TimePointZero, tf2::durationFromSec(0.0))) {
+                geometry_msgs::msg::TransformStamped tf_msg = 
+                    tf_buffer_->lookupTransform("map", "zedxm_base_link", tf2::TimePointZero);
+                
+                // 取得機器人當前在 map 座標系下的 X (前後) 與 Z (高度)
+                camera_pos.x() = tf_msg.transform.translation.x;
+                camera_pos.y() = tf_msg.transform.translation.y;
+                camera_pos.z() = tf_msg.transform.translation.z;
             }
         } catch (tf2::TransformException &ex) {
-            RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Base link TF lookup failed: %s", ex.what());
+            RCLCPP_ERROR(this->get_logger(), "TF Exception: %s", ex.what());
         }
 
-        // 清空舊數據並利用內積重新計算 (修正你提報的 bug 覆蓋，保留 100% 正確的相對計算)
+        Eigen::Vector3d n_v(plane_distances_.v_normal.x(), plane_distances_.v_normal.y(), plane_distances_.v_normal.z());
+        double camera_projected_v = camera_pos.dot(n_v); // 機器人位置內積樓梯法向量
         plane_msg_c_.vertical.clear();
-        double robot_projected_v = robot_pos.dot(plane_distances_.v_normal);
         for (double v_map : plane_distances_.vertical) {
-            plane_msg_c_.vertical.push_back(v_map - robot_projected_v);
+            // 公式：世界距離 - 機器人投影長度
+            plane_msg_c_.vertical.push_back(v_map - camera_projected_v);
         }
-
+        Eigen::Vector3d n_h(plane_distances_.h_normal.x(), plane_distances_.h_normal.y(), plane_distances_.h_normal.z());
+        double camera_projected_h = camera_pos.dot(n_h);
         plane_msg_c_.horizontal.clear();
-        double robot_projected_h = robot_pos.dot(plane_distances_.h_normal);
         for (double h_map : plane_distances_.horizontal) {
-            plane_msg_c_.horizontal.push_back(h_map - robot_projected_h);
+            // 樓梯在世界的高度 - 機器人當前的高度 = 樓梯相對於機器人的高度！
+            plane_msg_c_.horizontal.push_back(h_map - camera_projected_h);
         }
-
-        // 複製相對座標系法向量 (直接採用第一手原始當前幀)
         plane_msg_c_.v_normal.x = plane_distances_.v_normal.x();
         plane_msg_c_.v_normal.y = plane_distances_.v_normal.y();
         plane_msg_c_.v_normal.z = plane_distances_.v_normal.z();
-        
         plane_msg_c_.h_normal.x = plane_distances_.h_normal.x();
         plane_msg_c_.h_normal.y = plane_distances_.h_normal.y();
         plane_msg_c_.h_normal.z = plane_distances_.h_normal.z();
-
-        // 4. 同步發布對應通訊 Topic
-        plane_pub_w_->publish(plane_msg_w_);
         plane_pub_c_->publish(plane_msg_c_);
-    }
 
-    std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
-    std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
-    std::unique_ptr<PlaneSegmentation> plane_segmentation_;
-    PlaneTracker plane_tracker_; 
+        // 當收到新點雲且處理完畢時，輸出尺寸結果到終端機
+        print_stair_dimensions();
+    }//end cloud_cb
 
-    PlaneDistances plane_distances_;
-    Eigen::Vector3d v_normal_;
-    Eigen::Vector3d h_normal_;
-    stair_estimation::msg::StairPlanes plane_msg_w_;
-    stair_estimation::msg::StairPlanes plane_msg_c_;
-    
-    rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_sub_;
-    rclcpp::Publisher<stair_estimation::msg::StairPlanes>::SharedPtr plane_pub_w_;
-    rclcpp::Publisher<stair_estimation::msg::StairPlanes>::SharedPtr plane_pub_c_;
+    void write_csv_record() {
+        if (!stair_csv_.is_open()) return;
+
+        stair_csv_ << this->get_clock()->now().seconds() << ",";
+        for (int i = 0; i < 5; i++) {
+            if (i < static_cast<int>(plane_distances_.vertical.size()))
+                stair_csv_ << std::fixed << std::setprecision(4) << plane_distances_.vertical[i];
+            else 
+                stair_csv_ << "0";
+            stair_csv_ << ",";
+        }
+        for (int i = 0; i < 5; i++) {
+            if (i < static_cast<int>(plane_distances_.horizontal.size()))
+                stair_csv_ << std::fixed << std::setprecision(4) << plane_distances_.horizontal[i];
+            else
+                stair_csv_ << "0";
+            stair_csv_ << ",";
+        }
+        stair_csv_ << "\n";
+    }//end write_csv_record
+
+    // print stair dimensions in terminal
+    void print_stair_dimensions() {
+        std::cout << "\033[2J\033[1;1H"; // clean terminal
+        std::cout << "\033[1;36m=================================================================\033[0m\n";
+        std::cout << "\033[1;33m                      STAIR ESTIMATOR REPORT                     \033[0m\n";
+        std::cout << "\033[1;36m=================================================================\033[0m\n";
+
+        // 1. first vertical distance (vertical0)
+        if (!plane_distances_.vertical.empty()) {
+            std::cout << " \033[1;32mBase Vertical Distance (Vert0):\033[0m " 
+                      << std::fixed << std::setprecision(4) << plane_distances_.vertical[0] << " m\n";
+        } else {
+            std::cout << " \033[1;31mBase Vertical Distance (Vert0):\033[0m N/A (No Planes Detected)\n";
+        }
+        std::cout << "-----------------------------------------------------------------\n";
+
+
+        // 2. Stair tread (Depth) and riser (Height)
+        std::vector<double> vert_diffs;
+        std::vector<double> horiz_diffs;
+
+        if (plane_distances_.vertical.size() > 1) {
+            for (size_t i = 0; i < plane_distances_.vertical.size() - 1; ++i) {
+                vert_diffs.push_back(std::abs(plane_distances_.vertical[i+1] - plane_distances_.vertical[i]));
+            }
+        }
+        if (plane_distances_.horizontal.size() > 1) {
+            for (size_t i = 0; i < plane_distances_.horizontal.size() - 1; ++i) {
+                horiz_diffs.push_back(std::abs(plane_distances_.horizontal[i+1] - plane_distances_.horizontal[i]));
+            }
+        }
+
+        // 決定總共要印幾行（取兩者長度的最大值）
+        size_t max_rows = std::max(vert_diffs.size(), horiz_diffs.size());
+
+        // 印出欄位 Title
+        std::cout << "   \033[1;32m Vertical Diff (Depth)\033[0m       │     \033[1;34m Horizontal Diff (Height)\033[0m  \n";
+        std::cout << "--------------------------------┼--------------------------------\n";
+
+        if (max_rows == 0) {
+            std::cout << "  (No sufficient vertical planes)      │  (No sufficient horizontal planes)\n";
+        } else {
+            for (size_t i = 0; i < max_rows; ++i) {
+                std::string left_col = "";
+                std::string right_col = "";
+
+                // 處理左側 垂直欄 資料
+                if (i < vert_diffs.size()) {
+                    std::stringstream ss;
+                    ss << "  [Vert" << i+1 << " - Vert" << i << "] = " 
+                       << std::fixed << std::setprecision(4) << vert_diffs[i] << " m";
+                    left_col = ss.str();
+                } else {
+                    left_col = "  -";
+                }
+
+                // 處理右側 水平欄 資料
+                if (i < horiz_diffs.size()) {
+                    std::stringstream ss;
+                    ss << "  [Horiz" << i+1 << " - Horiz" << i << "] = " 
+                       << std::fixed << std::setprecision(4) << horiz_diffs[i] << " m";
+                    right_col = ss.str();
+                } else {
+                    right_col = "  -";
+                }
+
+                // 這裡寬度設為 42，利用 std::left 靠左對齊，確保中間的「│」分隔線永遠在同一行對齊
+                std::cout << std::left << std::setw(32) << left_col 
+                          << "│" << right_col << "\n";
+            }
+        }
+        std::cout << "\033[1;36m=================================================================\033[0m\n\n";
+    }//end print_stair_dimensions
 };
 
 int main(int argc, char** argv) {
     rclcpp::init(argc, argv);
-    auto node = std::make_shared<StairEstimatorNode>();
-    rclcpp::spin(node);
+    
+    // 1. 建立節點物件
+    auto estimator = std::make_shared<StairEstimatorNode>();
+    
+    // 2. 顯式建立一個單執行緒執行器
+    rclcpp::executors::SingleThreadedExecutor executor;
+    
+    // 3. 🌟 關鍵修正：在迴圈外部「只加入一次」執行器，徹底解決重複新增的 bug
+    executor.add_node(estimator);
+    
+    rclcpp::WallRate rate(10);
+
+    /* Loop */
+    while (rclcpp::ok()) {
+        // 4. 🌟 改呼叫執行器版本的 spin_some()，它只會消化當前隊列，不會重複 add_node
+        executor.spin_some();
+        
+        // 寫入 CSV 紀錄 (功能完全保留)
+        estimator->write_csv_record();
+
+        rate.sleep();
+    }//end while
+
     rclcpp::shutdown();
     return 0;
 }

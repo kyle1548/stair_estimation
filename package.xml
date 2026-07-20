@@ -1,5 +1,4 @@
 <?xml version="1.0"?>
-<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>stair_estimation</name>
   <version>0.0.0</version>
@@ -13,13 +12,13 @@
   <depend>rclcpp</depend>
   <depend>sensor_msgs</depend>
   <depend>geometry_msgs</depend>
-  <depend>tf2</depend>
+  <depend>visualization_msgs</depend>
   <depend>tf2_ros</depend>
   <depend>tf2_eigen</depend>
   <depend>pcl_conversions</depend>
-  <depend>pcl_ros</depend>
-  <depend>libpcl-all-dev</depend>
   <depend>eigen</depend>
+
+  <exec_depend>rosidl_default_runtime</exec_depend>
 
   <member_of_group>rosidl_interface_packages</member_of_group>
 
