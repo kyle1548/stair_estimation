@@ -1,56 +1,67 @@
 cmake_minimum_required(VERSION 3.8)
+project(stair_estimation)
 
-set(CMAKE_C_COMPILER "/usr/bin/gcc")
-set(CMAKE_CXX_COMPILER "/usr/bin/g++")
+if(NOT CMAKE_CXX_STANDARD)
+  set(CMAKE_CXX_STANDARD 17)
+endif()
 
-project(stair_estimation LANGUAGES C CXX)
+# 尋找依賴元件
+find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(tf2_eigen REQUIRED)
+find_package(pcl_conversions REQUIRED)
+find_package(pcl_ros REQUIRED)
+find_package(PCL REQUIRED COMPONENTS common io filters segmentation features)
+find_package(Eigen3 REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
 
-set (CMAKE_EXE_LINKER_FLAGS)
-set (CMAKE_CXX_STANDARD 17)
-set (CMAKE_CXX_STANDARD_REQUIRED True)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -w")
-set(CMAKE_BUILD_TYPE Release)
-set(CMAKE_CXX_FLAGS_RELEASE "-O3")
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE INTERNAL "")
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}/build)
-set(EIGEN3_INCLUDE_DIR "${LOCAL_PACKAGE_PATH}/include/eigen3")
-
-find_package(Eigen3 3.3 REQUIRED NO_MODULE)
-find_package(catkin REQUIRED COMPONENTS roscpp std_msgs rosgraph_msgs geometry_msgs
-  sensor_msgs visualization_msgs tf2_ros tf2_eigen pcl_ros pcl_conversions pcl_msgs
-  message_generation 
+# 生成自訂訊息 (StairPlanes.msg)
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/StairPlanes.msg"
+  DEPENDENCIES geometry_msgs
 )
 
-add_message_files(
-  FILES
-  StairPlanes.msg
-)
-
-generate_messages(
-  DEPENDENCIES
-  std_msgs
-  geometry_msgs
-)
-
-catkin_package(
-  INCLUDE_DIRS include 
-  CATKIN_DEPENDS roscpp std_msgs message_runtime rosgraph_msgs geometry_msgs sensor_msgs visualization_msgs tf2_ros tf2_eigen pcl_ros pcl_conversions pcl_msgs
-)
-
+# 引入標頭檔路徑
 include_directories(
-  ${catkin_INCLUDE_DIRS}
-  ${CMAKE_CURRENT_LIST_DIR}
-  ${EIGEN3_INCLUDE_DIR}
   include
+  ${PCL_INCLUDE_DIRS}
+  ${EIGEN3_INCLUDE_DIR}
 )
 
-add_subdirectory(src)
-
-add_library(${PROJECT_NAME}
-  # src/dbscan.cpp
+# 建立幾何運算核心函式庫
+add_library(stair_geometry_lib
   src/plane_segmentation.cpp
 )
 
-target_link_libraries(${PROJECT_NAME}
-  ${catkin_LIBRARIES}
+# 確保自訂訊息在 C++ 核心庫之前建置完成
+rosidl_get_typesupport_target(cpp_typesupport_target "${PROJECT_NAME}" "rosidl_typesupport_cpp")
+add_dependencies(stair_geometry_lib ${cpp_typesupport_target})
+
+target_link_libraries(stair_geometry_lib
+  rclcpp::rclcpp
+  ${PCL_LIBRARIES}
 )
+
+# 建立 ROS2 主要執行節點
+add_executable(stair_estimator src/stair_estimator.cpp)
+target_link_libraries(stair_estimator
+  stair_geometry_lib
+  rclcpp::rclcpp
+  tf2_ros::tf2_ros
+  pcl_conversions::pcl_conversions
+  pcl_ros::pcl_ros
+)
+
+# 鏈結自訂訊息介面到執行檔
+rosidl_target_interfaces(stair_estimator ${PROJECT_NAME} "rosidl_typesupport_cpp")
+
+# 設定安裝路徑
+install(TARGETS stair_estimator
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+ament_package()
