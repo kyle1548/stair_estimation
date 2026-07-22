@@ -4,4 +4,5 @@ Improved version of stair dimension estimation used in [corgi_stair](https://git
 
 
 ```bash
+colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release
 rosrun stair_estimation stair_estimator

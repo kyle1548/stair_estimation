@@ -106,16 +106,35 @@ PlaneDistances PlaneSegmentation::segment_planes(pcl::PointCloud<PointT>::Ptr cl
 
 void PlaneSegmentation::setInputCloud(pcl::PointCloud<PointT>::Ptr cloud) {
     /* Apply ROI filtering */
-    pass_.setInputCloud(cloud);
-    pass_.setFilterFieldName("x");
-    pass_.setFilterLimits(0.10, 1.0);
-    pass_.filter(*cloud);
-    pass_.setFilterFieldName("y");
-    pass_.setFilterLimits(-0.4, 0.4);
-    pass_.filter(*cloud);
-    pass_.setFilterFieldName("z");
-    pass_.setFilterLimits(-0.5, 1.0);
-    pass_.filter(*cloud);
+    // pass_.setInputCloud(cloud);
+    // pass_.setFilterFieldName("x");
+    // pass_.setFilterLimits(0.10, 1.0);
+    // pass_.filter(*cloud);
+    // pass_.setFilterFieldName("y");
+    // pass_.setFilterLimits(-0.4, 0.4);
+    // pass_.filter(*cloud);
+    // pass_.setFilterFieldName("z");
+    // pass_.setFilterLimits(-0.5, 1.0);
+    // pass_.filter(*cloud);
+    pcl::PointCloud<PointT>::Ptr filtered_cloud(new pcl::PointCloud<PointT>(*cloud));
+    int height = static_cast<int>(filtered_cloud->height);
+    int width  = static_cast<int>(filtered_cloud->width);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            auto& pt = filtered_cloud->at(x, y);
+
+            // 若原本就是無效點，跳過
+            if (std::isnan(pt.x) || std::isnan(pt.y) || std::isnan(pt.z)) continue;
+
+            // 🌟 判定 ROI 範圍 (ROI 外的點補 NaN，不破壞矩陣形狀)
+            if (pt.x <  0.1 || pt.x > 1.0 ||
+                pt.y < -0.4 || pt.y > 0.4 ||
+                pt.z < -0.5 || pt.z > 1.0) 
+            {
+                pt.x = pt.y = pt.z = std::numeric_limits<float>::quiet_NaN();
+            }
+        }
+    }
 
     /* Transform from camera coord to world coord */
     try {
@@ -123,29 +142,51 @@ void PlaneSegmentation::setInputCloud(pcl::PointCloud<PointT>::Ptr cloud) {
             tf_buffer_->lookupTransform("map", cloud->header.frame_id, tf2::TimePointZero);
         pcl_ros::transformPointCloud(*cloud, *cloud, tf_msg);
         cloud->header.frame_id = "map";
-        RCLCPP_INFO(node_->get_logger(), 
-    "\n--- [TF 內容檢查] ---\n"
-    "Header Time : %d.%d\n"
-    "Frame ID    : %s -> %s\n"
-    "Translation : x=%.6f, y=%.6f, z=%.6f\n"
-    "Rotation    : x=%.3f, y=%.3f, z=%.3f, w=%.3f",
+
+rclcpp::Time current_time = node_->now();
+
+// 2. 取得 TF 訊息自帶的時間戳記
+rclcpp::Time tf_time = tf_msg.header.stamp;
+
+// 3. 計算時間差 (單位為秒, double 格式)
+double delay_sec = (current_time - tf_time).seconds();
+
+// 4. 精準印出 TF 時間、當前時間與延遲毫秒數 (ms)
+RCLCPP_INFO(node_->get_logger(), 
+    "\n--- [TF 時間延遲檢查] ---\n"
+    "TF Stamp     : %d.%09u\n"
+    "Current Time : %d.%09u\n"
+    "TF Delay     : %.3f ms (%.4f sec)",
     tf_msg.header.stamp.sec, tf_msg.header.stamp.nanosec,
-    tf_msg.header.frame_id.c_str(), tf_msg.child_frame_id.c_str(),
-    tf_msg.transform.translation.x,
-    tf_msg.transform.translation.y,
-    tf_msg.transform.translation.z,
-    tf_msg.transform.rotation.x,
-    tf_msg.transform.rotation.y,
-    tf_msg.transform.rotation.z,
-    tf_msg.transform.rotation.w
+    current_time.seconds() == 0 ? 0 : static_cast<int32_t>(current_time.seconds()), 
+    static_cast<uint32_t>(current_time.nanoseconds() % 1000000000),
+    delay_sec * 1000.0, // 轉為毫秒 ms
+    delay_sec
 );
+
     } catch (tf2::TransformException &ex) {
         RCLCPP_ERROR_THROTTLE(node_->get_logger(), *node_->get_clock(), 1000, 
             "TF Exception in setInputCloud: %s", ex.what());
     }
 
+    // 🌟 優化 2：提取 Transform 矩陣，用 Eigen 做高效率全陣列點雲轉換
+    /*
+    try {
+        geometry_msgs::msg::TransformStamped tf_msg = 
+            tf_buffer_->lookupTransform("map", cloud->header.frame_id, cloud->header.stamp, tf2::durationFromSec(0.01));
+
+        // 將 TransformStamped 轉為 Eigen 矩陣 (微秒級)
+        Eigen::Isometry3d transform = tf2::transformToEigen(tf_msg);
+        pcl::transformPointCloud(*filtered_cloud, *filtered_cloud, transform.cast<float>());
+        filtered_cloud->header.frame_id = "map";
+
+    } catch (tf2::TransformException &ex) {
+        RCLCPP_ERROR_THROTTLE(node_->get_logger(), *node_->get_clock(), 1000, 
+            "TF Exception in setInputCloud: %s", ex.what());
+    }
+            */
     /* Set cloud */
-    cloud_ = cloud;
+    cloud_ = filtered_cloud;
     normal_estimator_.setInputCloud(cloud_);
 }//end setInputCloud
 
@@ -162,15 +203,15 @@ void PlaneSegmentation::computeNormals() {
 
             if (abs_nz >= abs_nx) { // z为主方向
                 if (nz < 0) {   // 翻轉為 +z
-                    normal.normal_x *= -1;
-                    normal.normal_y *= -1;
-                    normal.normal_z *= -1;
+                    normal.normal_x = -nx;
+                    normal.normal_y = -ny;
+                    normal.normal_z = -nz;
                 }//end if
             } else {    // x為主方向
                 if (nx > 0) {   // 翻轉為 -x
-                    normal.normal_x *= -1;
-                    normal.normal_y *= -1;
-                    normal.normal_z *= -1;
+                    normal.normal_x = -nx;
+                    normal.normal_y = -ny;
+                    normal.normal_z = -nz;
                 }//end if
             }//end if else
         }//end if
