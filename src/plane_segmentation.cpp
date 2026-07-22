@@ -30,6 +30,7 @@
 
 typedef pcl::PointXYZRGB PointT;
 typedef pcl::PointXYZ PointT_no_color;
+#include <chrono> // 確保有 include 這個標頭檔
 
 
 PlaneSegmentation::PlaneSegmentation(bool debug) :
@@ -121,12 +122,36 @@ void PlaneSegmentation::setInputCloud(pcl::PointCloud<PointT>::Ptr cloud) {
     try {
         if (tf_buffer_.canTransform("map", cloud->header.frame_id, ros::Time(0), ros::Duration(0.0))) {
             pcl_ros::transformPointCloud("map", *cloud, *cloud, tf_buffer_);
+            geometry_msgs::TransformStamped tf_msg = 
+        tfBuffer.lookupTransform("map", 
+                                 cloud_msg->header.frame_id, 
+                                 tf2::TimePointZero, 
+                                 ros::Duration(0));
         } else {
             ROS_WARN_THROTTLE(1, "Cannot transform cloud from %s to map. TF not ready.", cloud->header.frame_id.c_str());
         }
     } catch (tf2::TransformException &ex) {
         ROS_ERROR_THROTTLE(1, "TF Exception in setInputCloud: %s", ex.what());
     }
+
+    // 1. 取得 ROS 1 當前時間 (若有開 use_sim_time，會自動回傳 /clock 模擬時間)
+ros::Time current_time = ros::Time::now();
+
+// 2. 取得 TF 時間戳記
+ros::Time tf_time = tf_msg.header.stamp;
+
+// 3. 計算延遲時間 (秒)
+double delay_sec = (current_time - tf_time).toSec();
+
+// 4. 精準印出延遲
+ROS_INFO("\n--- [ROS 1 TF 時間延遲檢查] ---\n"
+         "TF Stamp     : %d.%09d\n"
+         "Current Time : %d.%09d\n"
+         "TF Delay     : %.3f ms (%.4f sec)",
+         tf_msg.header.stamp.sec, tf_msg.header.stamp.nsec,
+         current_time.sec, current_time.nsec,
+         delay_sec * 1000.0, // 轉毫秒 ms
+         delay_sec);
 
     /* Set cloud */
     cloud_ = cloud;
@@ -147,15 +172,15 @@ void PlaneSegmentation::computeNormals() {
 
             if (abs_nz >= abs_nx) { // z為主方向
                 if (nz < 0) {   // 翻轉為 +z
-                    normal.normal_x *= -1;
-                    normal.normal_y *= -1;
-                    normal.normal_z *= -1;
+                    normal.normal_x = -nx;
+                    normal.normal_y = -ny;
+                    normal.normal_z = -nz;
                 }//end if
             } else {    // x為主方向
                 if (nx > 0) {   // 翻轉為 -x
-                    normal.normal_x *= -1;
-                    normal.normal_y *= -1;
-                    normal.normal_z *= -1;
+                    normal.normal_x = -nx;
+                    normal.normal_y = -ny;
+                    normal.normal_z = -nz;
                 }//end if
             }//end if else
         }//end if
