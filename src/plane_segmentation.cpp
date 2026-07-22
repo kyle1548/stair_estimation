@@ -30,7 +30,6 @@
 
 typedef pcl::PointXYZRGB PointT;
 typedef pcl::PointXYZ PointT_no_color;
-#include <chrono> // 確保有 include 這個標頭檔
 
 
 PlaneSegmentation::PlaneSegmentation(bool debug) :
@@ -66,18 +65,13 @@ PlaneSegmentation::~PlaneSegmentation() {
 }//end ~PlaneSegmentation
 
 PlaneDistances PlaneSegmentation::segment_planes(pcl::PointCloud<PointT>::Ptr cloud) {
-        auto t1= std::chrono::high_resolution_clock::now();
     this->setInputCloud(cloud);
-        auto t2 = std::chrono::high_resolution_clock::now();
     this->computeNormals();
-        auto t3= std::chrono::high_resolution_clock::now();
     this->group_by_normals();
-        auto t4= std::chrono::high_resolution_clock::now();
     auto [v_plane_distances, v_plane_point_indices] = segment_by_distances(-centroid_x, v_point_idx);
     auto [h_plane_distances, h_plane_point_indices] = segment_by_distances(centroid_z, h_point_idx);
-        auto t5 = std::chrono::high_resolution_clock::now();
-    
     // auto [avg_depths, edge_indices] = find_depth_by_h_plane(h_plane_distances, h_plane_point_indices);
+    
     if (debug_) {
         visualize_stair_planes();
         visualize_normal_vectors();
@@ -87,71 +81,47 @@ PlaneDistances PlaneSegmentation::segment_planes(pcl::PointCloud<PointT>::Ptr cl
 
     }//end if 
     
-        auto t6 = std::chrono::high_resolution_clock::now();
-    
-
-        
-
-       double t12_time_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
-       double t23_time_ms = std::chrono::duration<double, std::milli>(t3 - t2).count();
-       double t34_time_ms = std::chrono::duration<double, std::milli>(t4 - t3).count();
-       double t45_time_ms = std::chrono::duration<double, std::milli>(t5 - t4).count();
-       double t56_time_ms = std::chrono::duration<double, std::milli>(t6 - t5).count();
-
-       // ROS 1 的 Log 印出方式
-ROS_INFO("[效能分析] 12: %.2f ms | 23: %.2f ms | 34: %.2f ms | 45: %.2f ms | 56: %.2f ms",
-         t12_time_ms, t23_time_ms, t34_time_ms, t45_time_ms, t56_time_ms);
-
     return {v_plane_distances, h_plane_distances, -centroid_x, centroid_z};
 }//end segment_planes
 
 void PlaneSegmentation::setInputCloud(pcl::PointCloud<PointT>::Ptr cloud) {
     /* Apply ROI filtering */
-    pass_.setInputCloud(cloud);
-    pass_.setFilterFieldName("x");
-    pass_.setFilterLimits(0.10, 1.0);
-    pass_.filter(*cloud);
-    pass_.setFilterFieldName("y");
-    pass_.setFilterLimits(-0.4, 0.4);
-    pass_.filter(*cloud);
-    pass_.setFilterFieldName("z");
-    pass_.setFilterLimits(-0.5, 1.0);
-    pass_.filter(*cloud);
+    // pass_.setInputCloud(cloud);
+    // pass_.setFilterFieldName("x");
+    // pass_.setFilterLimits(0.10, 1.0);
+    // pass_.filter(*cloud);
+    // pass_.setFilterFieldName("y");
+    // pass_.setFilterLimits(-0.4, 0.4);
+    // pass_.filter(*cloud);
+    // pass_.setFilterFieldName("z");
+    // pass_.setFilterLimits(-0.5, 1.0);
+    // pass_.filter(*cloud);
+    int height = static_cast<int>(cloud->height);
+    int width  = static_cast<int>(cloud->width);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            auto& pt = cloud->at(x, y);
+
+            // 若原本就是無效點，跳過
+            if (std::isnan(pt.x) || std::isnan(pt.y) || std::isnan(pt.z)) continue;
+
+            // 🌟 判定 ROI 範圍 (ROI 外的點補 NaN，不破壞矩陣形狀)
+            if (pt.x <  0.1 || pt.x > 1.0 ||
+                pt.y < -0.4 || pt.y > 0.4 ||
+                pt.z < -0.5 || pt.z > 1.0) 
+            {
+                pt.x = pt.y = pt.z = std::numeric_limits<float>::quiet_NaN();
+            }
+        }
+    }
 
     /* Transform from camera coord to world coord */
     try {
-        if (tf_buffer_.canTransform("map", cloud->header.frame_id, ros::Time(0), ros::Duration(0.0))) {
-            pcl_ros::transformPointCloud("map", *cloud, *cloud, tf_buffer_);
-            geometry_msgs::TransformStamped tf_msg = 
-        tfBuffer.lookupTransform("map", 
-                                 cloud_msg->header.frame_id, 
-                                 tf2::TimePointZero, 
-                                 ros::Duration(0));
-        } else {
-            ROS_WARN_THROTTLE(1, "Cannot transform cloud from %s to map. TF not ready.", cloud->header.frame_id.c_str());
-        }
+        pcl_ros::transformPointCloud("map", *cloud, *cloud, tf_buffer_);
     } catch (tf2::TransformException &ex) {
-        ROS_ERROR_THROTTLE(1, "TF Exception in setInputCloud: %s", ex.what());
+        ROS_ERROR_THROTTLE(1, "Cannot transform cloud from %s to map (TF not ready): %s", cloud->header.frame_id.c_str(), ex.what());
+        return;
     }
-
-    // 1. 取得 ROS 1 當前時間 (若有開 use_sim_time，會自動回傳 /clock 模擬時間)
-ros::Time current_time = ros::Time::now();
-
-// 2. 取得 TF 時間戳記
-ros::Time tf_time = tf_msg.header.stamp;
-
-// 3. 計算延遲時間 (秒)
-double delay_sec = (current_time - tf_time).toSec();
-
-// 4. 精準印出延遲
-ROS_INFO("\n--- [ROS 1 TF 時間延遲檢查] ---\n"
-         "TF Stamp     : %d.%09d\n"
-         "Current Time : %d.%09d\n"
-         "TF Delay     : %.3f ms (%.4f sec)",
-         tf_msg.header.stamp.sec, tf_msg.header.stamp.nsec,
-         current_time.sec, current_time.nsec,
-         delay_sec * 1000.0, // 轉毫秒 ms
-         delay_sec);
 
     /* Set cloud */
     cloud_ = cloud;
