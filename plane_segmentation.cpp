@@ -1,5 +1,5 @@
-#include <rclcpp/rclcpp.hpp>
-#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <ros/ros.h>
+#include <sensor_msgs/PointCloud2.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/point_types.h>
 #include <pcl/io/pcd_io.h>
@@ -10,7 +10,7 @@
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/visualization/cloud_viewer.h>
 #include <pcl/filters/passthrough.h>
-#include <visualization_msgs/msg/marker_array.hpp>
+#include <visualization_msgs/MarkerArray.h>
 #include <pcl/search/kdtree.h>
 #include <pcl/segmentation/extract_clusters.h>
 #include <pcl/features/normal_3d.h>
@@ -19,12 +19,11 @@
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/buffer.h>
 #include <tf2_eigen/tf2_eigen.h>
-#include <pcl_ros/transforms.hpp>
+#include <pcl_ros/transforms.h>
 #include <unordered_map>
 #include <random>
 #include <algorithm>
 #include <memory> 
-#include <boost/functional/hash.hpp>
 
 #include <Eigen/Dense>
 #include "plane_segmentation.hpp"
@@ -33,8 +32,7 @@ typedef pcl::PointXYZRGB PointT;
 typedef pcl::PointXYZ PointT_no_color;
 
 
-PlaneSegmentation::PlaneSegmentation(rclcpp::Node* node, bool debug) :
-    node_(node),
+PlaneSegmentation::PlaneSegmentation(bool debug) :
     normals_(new pcl::PointCloud<pcl::Normal>),
     last_marker_count_(0),
     last_plane_marker_count_h_(0),
@@ -43,17 +41,18 @@ PlaneSegmentation::PlaneSegmentation(rclcpp::Node* node, bool debug) :
 {
     pass_.setKeepOrganized(true);
     normal_estimator_.setNormalEstimationMethod(normal_estimator_.AVERAGE_3D_GRADIENT);
+    // normal_estimator_.setNormalEstimationMethod(normal_estimator_.AVERAGE_DEPTH_CHANGE);
+    // normal_estimator_.setNormalEstimationMethod(normal_estimator_.COVARIANCE_MATRIX);
     normal_estimator_.setMaxDepthChangeFactor(0.01f);
     normal_estimator_.setNormalSmoothingSize(10.0f);
 
-    tf_buffer_ = std::make_unique<tf2_ros::Buffer>(node_->get_clock());
-    tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_, node_, false);    
+    tf_listener_ = std::make_unique<tf2_ros::TransformListener>(tf_buffer_);    
     if (debug_) {
-        stair_pub = node_->create_publisher<sensor_msgs::msg::PointCloud2>("visual_stair_points", 1);
-        normal_pub = node_->create_publisher<visualization_msgs::msg::MarkerArray>("visual_normal_vectors", 1);
-        normal_sphere_pub = node_->create_publisher<sensor_msgs::msg::PointCloud2>("visual_normal_sphere", 1);
-        plane_pub = node_->create_publisher<visualization_msgs::msg::MarkerArray>("visual_extended_planes", 1);
-        edge_pub = node_->create_publisher<sensor_msgs::msg::PointCloud2>("visual_stair_edges", 1);
+        stair_pub = nh.advertise<sensor_msgs::PointCloud2>("visual_stair_points", 1);
+        normal_pub = nh.advertise<visualization_msgs::MarkerArray>("visual_normal_vectors", 1);
+        normal_sphere_pub = nh.advertise<sensor_msgs::PointCloud2>("visual_normal_sphere", 1);
+        plane_pub = nh.advertise<visualization_msgs::MarkerArray>("visual_extended_planes", 1);
+        edge_pub = nh.advertise<sensor_msgs::PointCloud2>("visual_stair_edges", 1);
 
         histogram_csv.open("histogram.csv");
     }//end if
@@ -72,11 +71,14 @@ PlaneDistances PlaneSegmentation::segment_planes(pcl::PointCloud<PointT>::Ptr cl
     auto [v_plane_distances, v_plane_point_indices] = segment_by_distances(-centroid_x, v_point_idx);
     auto [h_plane_distances, h_plane_point_indices] = segment_by_distances(centroid_z, h_point_idx);
     
+    // auto [avg_depths, edge_indices] = find_depth_by_h_plane(h_plane_distances, h_plane_point_indices);
     if (debug_) {
         visualize_stair_planes();
         visualize_normal_vectors();
         visualize_extend_planes(h_plane_distances, v_plane_distances);
         visualize_normal_in_sphere();
+        // visualize_h_plane_edges(edge_indices);
+
     }//end if 
     
     return {v_plane_distances, h_plane_distances, -centroid_x, centroid_z};
@@ -97,29 +99,13 @@ void PlaneSegmentation::setInputCloud(pcl::PointCloud<PointT>::Ptr cloud) {
 
     /* Transform from camera coord to world coord */
     try {
-        geometry_msgs::msg::TransformStamped tf_msg = 
-            tf_buffer_->lookupTransform("map", cloud->header.frame_id, tf2::TimePointZero);
-        pcl_ros::transformPointCloud(*cloud, *cloud, tf_msg);
-        cloud->header.frame_id = "map";
-        RCLCPP_INFO(node_->get_logger(), 
-    "\n--- [TF 內容檢查] ---\n"
-    "Header Time : %d.%d\n"
-    "Frame ID    : %s -> %s\n"
-    "Translation : x=%.6f, y=%.6f, z=%.6f\n"
-    "Rotation    : x=%.3f, y=%.3f, z=%.3f, w=%.3f",
-    tf_msg.header.stamp.sec, tf_msg.header.stamp.nanosec,
-    tf_msg.header.frame_id.c_str(), tf_msg.child_frame_id.c_str(),
-    tf_msg.transform.translation.x,
-    tf_msg.transform.translation.y,
-    tf_msg.transform.translation.z,
-    tf_msg.transform.rotation.x,
-    tf_msg.transform.rotation.y,
-    tf_msg.transform.rotation.z,
-    tf_msg.transform.rotation.w
-);
+        if (tf_buffer_.canTransform("map", cloud->header.frame_id, ros::Time(0), ros::Duration(0.0))) {
+            pcl_ros::transformPointCloud("map", *cloud, *cloud, tf_buffer_);
+        } else {
+            ROS_WARN_THROTTLE(1, "Cannot transform cloud from %s to map. TF not ready.", cloud->header.frame_id.c_str());
+        }
     } catch (tf2::TransformException &ex) {
-        RCLCPP_ERROR_THROTTLE(node_->get_logger(), *node_->get_clock(), 1000, 
-            "TF Exception in setInputCloud: %s", ex.what());
+        ROS_ERROR_THROTTLE(1, "TF Exception in setInputCloud: %s", ex.what());
     }
 
     /* Set cloud */
@@ -136,9 +122,10 @@ void PlaneSegmentation::computeNormals() {
             double nz = normal.normal_z;
 
             double abs_nx = std::abs(nx);
+            // double abs_ny = std::abs(ny);
             double abs_nz = std::abs(nz);
 
-            if (abs_nz >= abs_nx) { // z为主方向
+            if (abs_nz >= abs_nx) { // z為主方向
                 if (nz < 0) {   // 翻轉為 +z
                     normal.normal_x *= -1;
                     normal.normal_y *= -1;
@@ -392,21 +379,19 @@ void PlaneSegmentation::visualize_stair_planes() {
     }
 
     /* Publish the result */
-    sensor_msgs::msg::PointCloud2 output;
+    sensor_msgs::PointCloud2 output;
     pcl::toROSMsg(*colored_cloud, output);
     output.header.frame_id = "map";
-    output.header.stamp = node_->get_clock()->now();
-    stair_pub->publish(output);
+    stair_pub.publish(output);
 }//end visualize_stair_planes
 
 void PlaneSegmentation::visualize_normal_vectors() {
     // 可視化 Marker
-    visualization_msgs::msg::MarkerArray marker_array;
-    visualization_msgs::msg::Marker marker_template;
+    visualization_msgs::MarkerArray marker_array;
+    visualization_msgs::Marker marker_template;
     marker_template.header.frame_id = "map";
-    marker_template.header.stamp = node_->get_clock()->now();
-    marker_template.type = visualization_msgs::msg::Marker::ARROW;
-    marker_template.action = visualization_msgs::msg::Marker::ADD;
+    marker_template.type = visualization_msgs::Marker::ARROW;
+    marker_template.action = visualization_msgs::Marker::ADD;
     marker_template.scale.x = 0.005;
     marker_template.scale.y = 0.010;
     marker_template.scale.z = 0.010;
@@ -444,10 +429,10 @@ void PlaneSegmentation::visualize_normal_vectors() {
     for (const auto& kv : grid_map) {
         const auto& pt = kv.second;
 
-        visualization_msgs::msg::Marker arrow = marker_template;
+        visualization_msgs::Marker arrow = marker_template;
         arrow.id = id++;
 
-        geometry_msgs::msg::Point start, end;
+        geometry_msgs::Point start, end;
         start.x = pt.x;
         start.y = pt.y;
         start.z = pt.z;
@@ -466,9 +451,9 @@ void PlaneSegmentation::visualize_normal_vectors() {
     marker_template.scale.z = 0.050;
     // 水平面法向量：centroid_z
     if (h_point_idx.size() > 0) {
-        visualization_msgs::msg::Marker arrow = marker_template;
+        visualization_msgs::Marker arrow = marker_template;
         arrow.id = id++;
-        geometry_msgs::msg::Point start, end;
+        geometry_msgs::Point start, end;
         start.x = 0.0;
         start.y = 0.0;
         start.z = 0.0;
@@ -487,9 +472,9 @@ void PlaneSegmentation::visualize_normal_vectors() {
     }
     // 垂直面法向量：centroid_x
     if (v_point_idx.size() > 0) {
-        visualization_msgs::msg::Marker arrow = marker_template;
+        visualization_msgs::Marker arrow = marker_template;
         arrow.id = id++;
-        geometry_msgs::msg::Point start, end;
+        geometry_msgs::Point start, end;
         start.x = 0.0;
         start.y = 0.0;
         start.z = 0.0;
@@ -508,26 +493,26 @@ void PlaneSegmentation::visualize_normal_vectors() {
     }
 
     // 刪除多餘的舊 marker
-    visualization_msgs::msg::Marker delete_marker;
-    delete_marker.action = visualization_msgs::msg::Marker::DELETE;
+    visualization_msgs::Marker delete_marker;
+    delete_marker.action = visualization_msgs::Marker::DELETE;
     for (int i = id; i < last_marker_count_; ++i) {
         delete_marker.id = i;
         marker_array.markers.push_back(delete_marker);
     }
     last_marker_count_ = id;  // 記住這次用了幾個 marker
 
-    normal_pub->publish(marker_array);
+    normal_pub.publish(marker_array);
 }//end visualize_normal_vectors
 
 void PlaneSegmentation::visualize_extend_planes(const std::vector<double>& h_plane_distances, const std::vector<double>& v_plane_distances) {
-    visualization_msgs::msg::MarkerArray marker_array;
+    visualization_msgs::MarkerArray marker_array;
     Eigen::Vector3d n_z = centroid_z.normalized();
     Eigen::Vector3d n_x = -centroid_x.normalized();
     Eigen::Vector3d z_axis(0, 0, 1);
     Eigen::Quaterniond q_z = Eigen::Quaterniond::FromTwoVectors(z_axis, n_z);
     Eigen::Quaterniond q_x = Eigen::Quaterniond::FromTwoVectors(z_axis, n_x);
     // Color setting
-    std_msgs::msg::ColorRGBA blue, red;
+    std_msgs::ColorRGBA blue, red;
     blue.b = 1.0; blue.a = 0.3;
     red.r = 1.0; red.a = 0.3;
 
@@ -536,12 +521,12 @@ void PlaneSegmentation::visualize_extend_planes(const std::vector<double>& h_pla
         double d = h_plane_distances[i];
         Eigen::Vector3d center = d * n_z;
 
-        visualization_msgs::msg::Marker marker;
+        visualization_msgs::Marker marker;
         marker.header.frame_id = "map";
-        marker.header.stamp = node_->get_clock()->now();
+        marker.header.stamp = ros::Time::now();
         marker.id = id++;
-        marker.type = visualization_msgs::msg::Marker::CUBE;
-        marker.action = visualization_msgs::msg::Marker::ADD;
+        marker.type = visualization_msgs::Marker::CUBE;
+        marker.action = visualization_msgs::Marker::ADD;
 
         marker.pose.position.x = center.x();
         marker.pose.position.y = center.y();
@@ -561,10 +546,10 @@ void PlaneSegmentation::visualize_extend_planes(const std::vector<double>& h_pla
     
     int current_h_count = h_plane_distances.size();
     for (int i = current_h_count; i < last_plane_marker_count_h_; ++i) {
-        visualization_msgs::msg::Marker marker;
+        visualization_msgs::Marker marker;
         marker.header.frame_id = "map";
         marker.id = i; 
-        marker.action = visualization_msgs::msg::Marker::DELETE;
+        marker.action = visualization_msgs::Marker::DELETE;
         marker_array.markers.push_back(marker);
     }
     last_plane_marker_count_h_ = current_h_count;
@@ -574,12 +559,12 @@ void PlaneSegmentation::visualize_extend_planes(const std::vector<double>& h_pla
         double d = v_plane_distances[i];
         Eigen::Vector3d center = d * n_x;
 
-        visualization_msgs::msg::Marker marker;
+        visualization_msgs::Marker marker;
         marker.header.frame_id = "map";
-        marker.header.stamp = node_->get_clock()->now();
+        marker.header.stamp = ros::Time::now();
         marker.id = v_start_id + i;
-        marker.type = visualization_msgs::msg::Marker::CUBE;
-        marker.action = visualization_msgs::msg::Marker::ADD;
+        marker.type = visualization_msgs::Marker::CUBE;
+        marker.action = visualization_msgs::Marker::ADD;
 
         marker.pose.position.x = center.x();
         marker.pose.position.y = center.y();
@@ -599,15 +584,15 @@ void PlaneSegmentation::visualize_extend_planes(const std::vector<double>& h_pla
     
     int current_v_count = v_plane_distances.size();
     for (int i = current_v_count; i < last_plane_marker_count_v_; ++i) {
-        visualization_msgs::msg::Marker marker;
+        visualization_msgs::Marker marker;
         marker.header.frame_id = "map";
         marker.id = v_start_id + i;
-        marker.action = visualization_msgs::msg::Marker::DELETE;
+        marker.action = visualization_msgs::Marker::DELETE;
         marker_array.markers.push_back(marker);
     }
     last_plane_marker_count_v_ = current_v_count;
 
-    plane_pub->publish(marker_array);
+    plane_pub.publish(marker_array);
 }//end visualize_extend_planes
 
 void PlaneSegmentation::visualize_normal_in_sphere() {
@@ -620,10 +605,10 @@ void PlaneSegmentation::visualize_normal_in_sphere() {
     std::vector<bool> is_vertical(normals_->size(), false);
 
     for (int idx : h_point_idx) {
-        if (idx >= 0 && idx < static_cast<int>(is_horizontal.size())) is_horizontal[idx] = true;
+        if (idx >= 0 && idx < is_horizontal.size()) is_horizontal[idx] = true;
     }
     for (int idx : v_point_idx) {
-        if (idx >= 0 && idx < static_cast<int>(is_vertical.size())) is_vertical[idx] = true;
+        if (idx >= 0 && idx < is_vertical.size()) is_vertical[idx] = true;
     }
 
     cloud_msg->points.reserve(normals_->size());
@@ -647,9 +632,41 @@ void PlaneSegmentation::visualize_normal_in_sphere() {
     }
 
     cloud_msg->width = cloud_msg->points.size();
-    pcl_conversions::toPCL(node_->get_clock()->now(), cloud_msg->header.stamp);
+    pcl_conversions::toPCL(ros::Time::now(), cloud_msg->header.stamp);
 
-    sensor_msgs::msg::PointCloud2 output;
+    sensor_msgs::PointCloud2 output;
     pcl::toROSMsg(*cloud_msg, output);
-    normal_sphere_pub->publish(output);
+    normal_sphere_pub.publish(output);
 }//end visualize_normal_in_sphere
+
+// void PlaneSegmentation::visualize_h_plane_edges(const std::vector<int>& edge_indices) {
+//     pcl::PointCloud<PointT>::Ptr edge_cloud(new pcl::PointCloud<PointT>);
+//     edge_cloud->reserve(edge_indices.size()); // 預先分配記憶體，提升效率
+
+//     // 2. 🌟 只複製被選為 edge 的點，並將它們塗成黃色 (R=255, G=255, B=0)
+//     for (int idx : edge_indices) {
+//         PointT point = cloud_->points[idx];
+        
+//         // 確保點是有效的
+//         if (pcl::isFinite(point)) {
+//             point.r = 255;
+//             point.g = 255;
+//             point.b = 0;
+//             edge_cloud->points.push_back(point);
+//         }
+//     }
+
+//     // 3. 填充 ROS 點雲的 header 資訊
+//     edge_cloud->header = cloud_->header; // 繼承原始點雲的 timestamp 和 frame_id
+//     edge_cloud->width = edge_cloud->points.size();
+//     edge_cloud->height = 1;
+//     edge_cloud->is_dense = false;
+//     pcl_conversions::toPCL(ros::Time::now(), edge_cloud->header.stamp);
+
+//     /* Publish the result */
+//     sensor_msgs::PointCloud2 output;
+//     pcl::toROSMsg(*edge_cloud, output);
+//     // 這裡的 frame_id 會自動繼承原本點雲的 (例如 map 或 zedxm_left_camera_frame)
+//     edge_pub.publish(output);
+// }//end visualize_h_plane_edges
+
