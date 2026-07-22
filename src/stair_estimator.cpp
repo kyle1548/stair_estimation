@@ -109,17 +109,18 @@ public:
         /* Relative to Camera */
         Eigen::Vector3d camera_pos(0.0, 0.0, 0.0);
         try {
-            if (tf_buffer_.canTransform("map", "zedxm_base_link", ros::Time(0), ros::Duration(0.0))) {
-                geometry_msgs::TransformStamped tf_msg = 
-                    tf_buffer_.lookupTransform("map", "zedxm_base_link", ros::Time(0));
-                
-                // 取得機器人當前在 map 座標系下的 X (前後) 與 Z (高度)
-                camera_pos.x() = tf_msg.transform.translation.x;
-                camera_pos.y() = tf_msg.transform.translation.y;
-                camera_pos.z() = tf_msg.transform.translation.z;
-            }
+            ros::Time cloud_stamp;
+            pcl_conversions::fromPCL(cloud->header.stamp, cloud_stamp);
+            geometry_msgs::TransformStamped tf_msg = 
+                tf_buffer_.lookupTransform("map", "zedxm_base_link", cloud_stamp, ros::Duration(0.0));
+            
+            // 取得機器人當前在 map 座標系下的 X (前後) 與 Z (高度)
+            camera_pos.x() = tf_msg.transform.translation.x;
+            camera_pos.y() = tf_msg.transform.translation.y;
+            camera_pos.z() = tf_msg.transform.translation.z;
         } catch (tf2::TransformException &ex) {
-            ROS_ERROR("TF Exception: %s", ex.what());
+            ROS_WARN_THROTTLE(1, "TF Exception: %s", ex.what());
+            return;
         }
 
         Eigen::Vector3d n_v(plane_distances_.v_normal.x(), plane_distances_.v_normal.y(), plane_distances_.v_normal.z());
