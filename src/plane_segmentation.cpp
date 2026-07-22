@@ -31,6 +31,7 @@
 
 typedef pcl::PointXYZRGB PointT;
 typedef pcl::PointXYZ PointT_no_color;
+#include <chrono> // 確保有 include 這個標頭檔
 
 
 PlaneSegmentation::PlaneSegmentation(rclcpp::Node* node, bool debug) :
@@ -66,11 +67,18 @@ PlaneSegmentation::~PlaneSegmentation() {
 }//end ~PlaneSegmentation
 
 PlaneDistances PlaneSegmentation::segment_planes(pcl::PointCloud<PointT>::Ptr cloud) {
+       auto t1 = std::chrono::high_resolution_clock::now();
+
     this->setInputCloud(cloud);
+       auto t2 = std::chrono::high_resolution_clock::now();
+
     this->computeNormals();
+       auto t3 = std::chrono::high_resolution_clock::now();
     this->group_by_normals();
+       auto t4 = std::chrono::high_resolution_clock::now();
     auto [v_plane_distances, v_plane_point_indices] = segment_by_distances(-centroid_x, v_point_idx);
     auto [h_plane_distances, h_plane_point_indices] = segment_by_distances(centroid_z, h_point_idx);
+       auto t5 = std::chrono::high_resolution_clock::now();
     
     if (debug_) {
         visualize_stair_planes();
@@ -78,7 +86,21 @@ PlaneDistances PlaneSegmentation::segment_planes(pcl::PointCloud<PointT>::Ptr cl
         visualize_extend_planes(h_plane_distances, v_plane_distances);
         visualize_normal_in_sphere();
     }//end if 
+       auto t6 = std::chrono::high_resolution_clock::now();
     
+
+        
+
+       double t12_time_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
+       double t23_time_ms = std::chrono::duration<double, std::milli>(t3 - t2).count();
+       double t34_time_ms = std::chrono::duration<double, std::milli>(t4 - t3).count();
+       double t45_time_ms = std::chrono::duration<double, std::milli>(t5 - t4).count();
+       double t56_time_ms = std::chrono::duration<double, std::milli>(t6 - t5).count();
+
+       RCLCPP_INFO(node_->get_logger(), 
+        "[效能分析] 12: %.2f ms | 23: %.2f ms | 34: %.2f ms | 45: %.2f ms | 56: %.2f ms",
+        t12_time_ms, t23_time_ms, t34_time_ms, t45_time_ms, t56_time_ms);
+
     return {v_plane_distances, h_plane_distances, -centroid_x, centroid_z};
 }//end segment_planes
 

@@ -30,7 +30,6 @@
 #include "stair_estimation/msg/stair_planes.hpp"
 #include "plane_segmentation.hpp"
 #include "plane_tracker.hpp"
-#include <chrono> // 確保有 include 這個標頭檔
 
 class StairEstimatorNode : public rclcpp::Node {
 private:
@@ -40,6 +39,7 @@ private:
     rclcpp::Publisher<stair_estimation::msg::StairPlanes>::SharedPtr plane_pub_w_;
     rclcpp::Publisher<stair_estimation::msg::StairPlanes>::SharedPtr plane_pub_c_;
 
+    pcl::PointCloud<PointT>::Ptr cloud;
     std::unique_ptr<PlaneSegmentation> plane_segmentation_;
     PlaneTracker plane_tracker_;
     
@@ -63,7 +63,8 @@ public:
         plane_pub_w_ = this->create_publisher<stair_estimation::msg::StairPlanes>("/stair_planes_world", 1);
         plane_pub_c_ = this->create_publisher<stair_estimation::msg::StairPlanes>("/stair_planes_camera", 1);
 
-        // 初始化 PlaneSegmentation
+        // 初始化 cloud, PlaneSegmentation
+        cloud = boost::make_shared<pcl::PointCloud<PointT>>();
         plane_segmentation_ = std::make_unique<PlaneSegmentation>(this);
 
         // 初始化 CSV 檔案
@@ -81,25 +82,23 @@ public:
     }//end ~StairEstimatorNode
 
     void cloud_cb(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
-        auto t1 = std::chrono::high_resolution_clock::now();
-        pcl::PointCloud<PointT>::Ptr cloud(new pcl::PointCloud<PointT>);
         pcl::fromROSMsg(*msg, *cloud);
         if (!cloud->isOrganized()) {
             RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000, 
                 "Point cloud is not organized. Skipping frame.");
             return;
         }
-auto t2 = std::chrono::high_resolution_clock::now();
+
         // 進行平面分割
         plane_distances_ = plane_segmentation_->segment_planes(cloud);
-auto t3 = std::chrono::high_resolution_clock::now();
+
         // 更新與發布平面資訊
         plane_tracker_.update(plane_distances_);
         plane_msg_w_.vertical = plane_tracker_.get_vertical_averages();
         plane_msg_w_.horizontal = plane_tracker_.get_horizontal_averages();
         v_normal_ = plane_tracker_.get_vertical_normal();
         h_normal_ = plane_tracker_.get_horizontal_normal();
-        auto t4 = std::chrono::high_resolution_clock::now();
+
         plane_msg_w_.v_normal.x = v_normal_.x();
         plane_msg_w_.v_normal.y = v_normal_.y();
         plane_msg_w_.v_normal.z = v_normal_.z();
@@ -107,7 +106,7 @@ auto t3 = std::chrono::high_resolution_clock::now();
         plane_msg_w_.h_normal.y = h_normal_.y();
         plane_msg_w_.h_normal.z = h_normal_.z();
         plane_pub_w_->publish(plane_msg_w_);
-auto t5 = std::chrono::high_resolution_clock::now();
+
         /* Relative to Camera */
         Eigen::Vector3d camera_pos(0.0, 0.0, 0.0);
         try {
@@ -142,23 +141,10 @@ auto t5 = std::chrono::high_resolution_clock::now();
         plane_msg_c_.h_normal.y = plane_distances_.h_normal.y();
         plane_msg_c_.h_normal.z = plane_distances_.h_normal.z();
         plane_pub_c_->publish(plane_msg_c_);
-auto t6 = std::chrono::high_resolution_clock::now();
+
         // 當收到新點雲且處理完畢時，輸出尺寸結果到終端機
         write_csv_record();
         print_stair_dimensions();
-       auto t7 = std::chrono::high_resolution_clock::now();
-       
-
-       double t12_time_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
-       double t23_time_ms = std::chrono::duration<double, std::milli>(t3 - t2).count();
-       double t34_time_ms = std::chrono::duration<double, std::milli>(t4 - t3).count();
-       double t45_time_ms = std::chrono::duration<double, std::milli>(t5 - t4).count();
-       double t56_time_ms = std::chrono::duration<double, std::milli>(t6 - t5).count();
-       double t67_time_ms = std::chrono::duration<double, std::milli>(t7 - t6).count();
-
-       RCLCPP_INFO(this->get_logger(), 
-        "[效能分析] 12: %.2f ms | 23: %.2f ms | 34: %.2f ms | 45: %.2f ms | 56: %.2f ms | 67: %.2f ms",
-        t12_time_ms, t23_time_ms, t34_time_ms, t45_time_ms, t56_time_ms, t67_time_ms);
     }//end cloud_cb
 
     void write_csv_record() {
