@@ -78,7 +78,6 @@ PlaneDistances PlaneSegmentation::segment_planes(pcl::PointCloud<PointT>::Ptr cl
         visualize_extend_planes(h_plane_distances, v_plane_distances);
         visualize_normal_in_sphere();
         // visualize_h_plane_edges(edge_indices);
-
     }//end if 
     
     return {v_plane_distances, h_plane_distances, -centroid_x, centroid_z};

@@ -4,4 +4,5 @@ Improved version of stair dimension estimation used in [corgi_stair](https://git
 
 
 ```bash
+catkin build
 rosrun stair_estimation stair_estimator
