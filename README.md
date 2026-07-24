@@ -9,5 +9,5 @@ colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release
 ```
 **Run the node:**
 ```bash
-rosrun stair_estimation stair_estimator
+ros2 run stair_estimation stair_estimator
 ```
