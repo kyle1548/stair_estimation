@@ -15,7 +15,7 @@
 
 #include <Eigen/Dense>
 
-#define DEBUG 1
+#define DEBUG 0
 typedef pcl::PointXYZRGB PointT;
 typedef pcl::PointXYZ PointT_no_color;
 
