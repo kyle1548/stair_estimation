@@ -48,7 +48,7 @@ PlaneSegmentation::PlaneSegmentation(rclcpp::Node* node, bool debug) :
     normal_estimator_.setNormalSmoothingSize(10.0f);
 
     tf_buffer_ = std::make_unique<tf2_ros::Buffer>(node_->get_clock());
-    tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_, node_, false);    
+    tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);    
     if (debug_) {
         stair_pub = node_->create_publisher<sensor_msgs::msg::PointCloud2>("visual_stair_points", 1);
         normal_pub = node_->create_publisher<visualization_msgs::msg::MarkerArray>("visual_normal_vectors", 1);
@@ -67,41 +67,23 @@ PlaneSegmentation::~PlaneSegmentation() {
 }//end ~PlaneSegmentation
 
 PlaneDistances PlaneSegmentation::segment_planes(pcl::PointCloud<PointT>::Ptr cloud) {
-       auto t1 = std::chrono::high_resolution_clock::now();
-
     this->setInputCloud(cloud);
-       auto t2 = std::chrono::high_resolution_clock::now();
-
     this->computeNormals();
-       auto t3 = std::chrono::high_resolution_clock::now();
     this->group_by_normals();
-       auto t4 = std::chrono::high_resolution_clock::now();
     auto [v_plane_distances, v_plane_point_indices] = segment_by_distances(-centroid_x, v_point_idx);
     auto [h_plane_distances, h_plane_point_indices] = segment_by_distances(centroid_z, h_point_idx);
-       auto t5 = std::chrono::high_resolution_clock::now();
-    
+    // auto [avg_depths, edge_indices] = find_depth_by_h_plane(h_plane_distances, h_plane_point_indices);
+
     if (debug_) {
         visualize_stair_planes();
         visualize_normal_vectors();
         visualize_extend_planes(h_plane_distances, v_plane_distances);
         visualize_normal_in_sphere();
+        // visualize_h_plane_edges(edge_indices);
     }//end if 
-       auto t6 = std::chrono::high_resolution_clock::now();
-    
-
-        
-
-       double t12_time_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
-       double t23_time_ms = std::chrono::duration<double, std::milli>(t3 - t2).count();
-       double t34_time_ms = std::chrono::duration<double, std::milli>(t4 - t3).count();
-       double t45_time_ms = std::chrono::duration<double, std::milli>(t5 - t4).count();
-       double t56_time_ms = std::chrono::duration<double, std::milli>(t6 - t5).count();
-
-       RCLCPP_INFO(node_->get_logger(), 
-        "[效能分析] 12: %.2f ms | 23: %.2f ms | 34: %.2f ms | 45: %.2f ms | 56: %.2f ms",
-        t12_time_ms, t23_time_ms, t34_time_ms, t45_time_ms, t56_time_ms);
 
     return {v_plane_distances, h_plane_distances, -centroid_x, centroid_z};
+    // return {avg_depths, h_plane_distances, -centroid_x, centroid_z};
 }//end segment_planes
 
 void PlaneSegmentation::setInputCloud(pcl::PointCloud<PointT>::Ptr cloud) {
@@ -116,12 +98,11 @@ void PlaneSegmentation::setInputCloud(pcl::PointCloud<PointT>::Ptr cloud) {
     // pass_.setFilterFieldName("z");
     // pass_.setFilterLimits(-0.5, 1.0);
     // pass_.filter(*cloud);
-    pcl::PointCloud<PointT>::Ptr filtered_cloud(new pcl::PointCloud<PointT>(*cloud));
-    int height = static_cast<int>(filtered_cloud->height);
-    int width  = static_cast<int>(filtered_cloud->width);
+    int height = static_cast<int>(cloud->height);
+    int width  = static_cast<int>(cloud->width);
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
-            auto& pt = filtered_cloud->at(x, y);
+            auto& pt = cloud->at(x, y);
 
             // 若原本就是無效點，跳過
             if (std::isnan(pt.x) || std::isnan(pt.y) || std::isnan(pt.z)) continue;
@@ -138,55 +119,15 @@ void PlaneSegmentation::setInputCloud(pcl::PointCloud<PointT>::Ptr cloud) {
 
     /* Transform from camera coord to world coord */
     try {
-        geometry_msgs::msg::TransformStamped tf_msg = 
-            tf_buffer_->lookupTransform("map", cloud->header.frame_id, tf2::TimePointZero);
-        pcl_ros::transformPointCloud(*cloud, *cloud, tf_msg);
-        cloud->header.frame_id = "map";
-
-rclcpp::Time current_time = node_->now();
-
-// 2. 取得 TF 訊息自帶的時間戳記
-rclcpp::Time tf_time = tf_msg.header.stamp;
-
-// 3. 計算時間差 (單位為秒, double 格式)
-double delay_sec = (current_time - tf_time).seconds();
-
-// 4. 精準印出 TF 時間、當前時間與延遲毫秒數 (ms)
-RCLCPP_INFO(node_->get_logger(), 
-    "\n--- [TF 時間延遲檢查] ---\n"
-    "TF Stamp     : %d.%09u\n"
-    "Current Time : %d.%09u\n"
-    "TF Delay     : %.3f ms (%.4f sec)",
-    tf_msg.header.stamp.sec, tf_msg.header.stamp.nanosec,
-    current_time.seconds() == 0 ? 0 : static_cast<int32_t>(current_time.seconds()), 
-    static_cast<uint32_t>(current_time.nanoseconds() % 1000000000),
-    delay_sec * 1000.0, // 轉為毫秒 ms
-    delay_sec
-);
-
+        pcl_ros::transformPointCloud("map", *cloud, *cloud, *tf_buffer_);
     } catch (tf2::TransformException &ex) {
-        RCLCPP_ERROR_THROTTLE(node_->get_logger(), *node_->get_clock(), 1000, 
-            "TF Exception in setInputCloud: %s", ex.what());
+        RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 1000, 
+            "Cannot transform cloud from %s to map (TF not ready): %s", cloud->header.frame_id.c_str(), ex.what());
+        return;
     }
 
-    // 🌟 優化 2：提取 Transform 矩陣，用 Eigen 做高效率全陣列點雲轉換
-    /*
-    try {
-        geometry_msgs::msg::TransformStamped tf_msg = 
-            tf_buffer_->lookupTransform("map", cloud->header.frame_id, cloud->header.stamp, tf2::durationFromSec(0.01));
-
-        // 將 TransformStamped 轉為 Eigen 矩陣 (微秒級)
-        Eigen::Isometry3d transform = tf2::transformToEigen(tf_msg);
-        pcl::transformPointCloud(*filtered_cloud, *filtered_cloud, transform.cast<float>());
-        filtered_cloud->header.frame_id = "map";
-
-    } catch (tf2::TransformException &ex) {
-        RCLCPP_ERROR_THROTTLE(node_->get_logger(), *node_->get_clock(), 1000, 
-            "TF Exception in setInputCloud: %s", ex.what());
-    }
-            */
     /* Set cloud */
-    cloud_ = filtered_cloud;
+    cloud_ = cloud;
     normal_estimator_.setInputCloud(cloud_);
 }//end setInputCloud
 
@@ -716,3 +657,36 @@ void PlaneSegmentation::visualize_normal_in_sphere() {
     pcl::toROSMsg(*cloud_msg, output);
     normal_sphere_pub->publish(output);
 }//end visualize_normal_in_sphere
+
+void PlaneSegmentation::visualize_h_plane_edges(const std::vector<int>& edge_indices) {
+    pcl::PointCloud<PointT>::Ptr edge_cloud(new pcl::PointCloud<PointT>);
+    edge_cloud->reserve(edge_indices.size()); // 預先分配記憶體，提升效率
+
+    // 2. 只複製被選為 edge 的點，並將它們塗成黃色 (R=255, G=255, B=0)
+    for (int idx : edge_indices) {
+        PointT point = cloud_->points[idx];
+        
+        // 確保點是有效的
+        if (pcl::isFinite(point)) {
+            point.r = 255;
+            point.g = 255;
+            point.b = 0;
+            edge_cloud->points.push_back(point);
+        }
+    }
+
+    // 3. 填充 ROS 2 點雲的 header 資訊
+    edge_cloud->header = cloud_->header; // 繼承原始點雲的 frame_id 等資訊
+    edge_cloud->width = static_cast<uint32_t>(edge_cloud->points.size());
+    edge_cloud->height = 1;
+    edge_cloud->is_dense = false;
+
+    // 將時間戳記更新為當前時間
+    rclcpp::Time now = node_->get_clock()->now();
+    edge_cloud->header.stamp = now.nanoseconds() / 1000; // PCL header 使用 microseconds
+
+    /* Publish the result */
+    sensor_msgs::msg::PointCloud2 output;
+    pcl::toROSMsg(*edge_cloud, output);
+    edge_pub->publish(output);
+}//end visualize_h_plane_edges

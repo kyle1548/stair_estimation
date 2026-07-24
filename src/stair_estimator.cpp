@@ -54,7 +54,7 @@ public:
     StairEstimatorNode() : Node("stair_estimator_node") {
         // 初始化訂閱與發布
         tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
-        tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_, this, false);    
+        tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);    
         
         cloud_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
             "/zedxm/zed_node/point_cloud/cloud_registered", 1,
@@ -110,14 +110,17 @@ public:
         /* Relative to Camera */
         Eigen::Vector3d camera_pos(0.0, 0.0, 0.0);
         try {
+            rclcpp::Time cloud_stamp(static_cast<int64_t>(cloud->header.stamp * 1000ULL));
             geometry_msgs::msg::TransformStamped tf_msg = 
-                tf_buffer_->lookupTransform("map", "zedxm_base_link", tf2::TimePointZero);                
+                tf_buffer_->lookupTransform("map", "zedxm_base_link", cloud_stamp);
+
             // 取得機器人當前在 map 座標系下的 X (前後) 與 Z (高度)
             camera_pos.x() = tf_msg.transform.translation.x;
             camera_pos.y() = tf_msg.transform.translation.y;
             camera_pos.z() = tf_msg.transform.translation.z;
         } catch (tf2::TransformException &ex) {
-            RCLCPP_ERROR(this->get_logger(), "TF Exception: %s", ex.what());
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "TF Exception: %s", ex.what());
+            return;
         }
 
         Eigen::Vector3d n_v(plane_distances_.v_normal.x(), plane_distances_.v_normal.y(), plane_distances_.v_normal.z());
@@ -208,7 +211,7 @@ public:
         std::cout << "--------------------------------┼--------------------------------\n";
 
         if (max_rows == 0) {
-            std::cout << "  (No sufficient vertical planes)      │  (No sufficient horizontal planes)\n";
+            std::cout << "    (No sufficient planes)      │      (No sufficient planes)\n";
         } else {
             for (size_t i = 0; i < max_rows; ++i) {
                 std::string left_col = "";
@@ -246,28 +249,25 @@ public:
 
 int main(int argc, char** argv) {
     rclcpp::init(argc, argv);
+    auto estimator = std::make_shared<StairEstimatorNode>();
     
-    // auto estimator = std::make_shared<StairEstimatorNode>();
-    
-    // // 1. 使用多執行緒 Executor
-    // auto executor = std::make_shared<rclcpp::executors::MultiThreadedExecutor>();
-    // executor->add_node(estimator);    
-    // // 3. 🌟 關鍵修正：在迴圈外部「只加入一次」執行器，徹底解決重複新增的 bug
+    // 使用單/多執行緒 Executor
+    // rclcpp::executors::MultiThreadedExecutor executor;
+    // rclcpp::executors::SingleThreadedExecutor executor;
+
     // executor.add_node(estimator);
     
-    // rclcpp::WallRate rate(10);
+    rclcpp::Rate rate(10);
+    
+    /* Loop */
+    while (rclcpp::ok()) {
+        rclcpp::spin_some(estimator);
+        // executor.spin_some();
 
-    // /* Loop */
-    // while (rclcpp::ok()) {
-    //     // 4. 🌟 改呼叫執行器版本的 spin_some()，它只會消化當前隊列，不會重複 add_node
-    //     executor.spin_some();
-        
-    //     // 寫入 CSV 紀錄 (功能完全保留)
-    //     estimator->write_csv_record();
+        rate.sleep();
+    }//end while
 
-    //     rate.sleep();
-    // }//end while
-    rclcpp::spin(std::make_shared<StairEstimatorNode>());
+    // executor.spin();
     rclcpp::shutdown();
     return 0;
 }

@@ -639,34 +639,34 @@ void PlaneSegmentation::visualize_normal_in_sphere() {
     normal_sphere_pub.publish(output);
 }//end visualize_normal_in_sphere
 
-// void PlaneSegmentation::visualize_h_plane_edges(const std::vector<int>& edge_indices) {
-//     pcl::PointCloud<PointT>::Ptr edge_cloud(new pcl::PointCloud<PointT>);
-//     edge_cloud->reserve(edge_indices.size()); // 預先分配記憶體，提升效率
+void PlaneSegmentation::visualize_h_plane_edges(const std::vector<int>& edge_indices) {
+    pcl::PointCloud<PointT>::Ptr edge_cloud(new pcl::PointCloud<PointT>);
+    edge_cloud->reserve(edge_indices.size()); // 預先分配記憶體，提升效率
 
-//     // 2. 🌟 只複製被選為 edge 的點，並將它們塗成黃色 (R=255, G=255, B=0)
-//     for (int idx : edge_indices) {
-//         PointT point = cloud_->points[idx];
+    // 2. 🌟 只複製被選為 edge 的點，並將它們塗成黃色 (R=255, G=255, B=0)
+    for (int idx : edge_indices) {
+        PointT point = cloud_->points[idx];
         
-//         // 確保點是有效的
-//         if (pcl::isFinite(point)) {
-//             point.r = 255;
-//             point.g = 255;
-//             point.b = 0;
-//             edge_cloud->points.push_back(point);
-//         }
-//     }
+        // 確保點是有效的
+        if (pcl::isFinite(point)) {
+            point.r = 255;
+            point.g = 255;
+            point.b = 0;
+            edge_cloud->points.push_back(point);
+        }
+    }
 
-//     // 3. 填充 ROS 點雲的 header 資訊
-//     edge_cloud->header = cloud_->header; // 繼承原始點雲的 timestamp 和 frame_id
-//     edge_cloud->width = edge_cloud->points.size();
-//     edge_cloud->height = 1;
-//     edge_cloud->is_dense = false;
-//     pcl_conversions::toPCL(ros::Time::now(), edge_cloud->header.stamp);
+    // 3. 填充 ROS 點雲的 header 資訊
+    edge_cloud->header = cloud_->header; // 繼承原始點雲的 timestamp 和 frame_id
+    edge_cloud->width = edge_cloud->points.size();
+    edge_cloud->height = 1;
+    edge_cloud->is_dense = false;
+    pcl_conversions::toPCL(ros::Time::now(), edge_cloud->header.stamp);
 
-//     /* Publish the result */
-//     sensor_msgs::PointCloud2 output;
-//     pcl::toROSMsg(*edge_cloud, output);
-//     // 這裡的 frame_id 會自動繼承原本點雲的 (例如 map 或 zedxm_left_camera_frame)
-//     edge_pub.publish(output);
-// }//end visualize_h_plane_edges
+    /* Publish the result */
+    sensor_msgs::PointCloud2 output;
+    pcl::toROSMsg(*edge_cloud, output);
+    // 這裡的 frame_id 會自動繼承原本點雲的 (例如 map 或 zedxm_left_camera_frame)
+    edge_pub.publish(output);
+}//end visualize_h_plane_edges
 
